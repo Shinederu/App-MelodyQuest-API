@@ -1,54 +1,195 @@
 <?php
-include_once('Controller/UserController.php');
 
-header("Access-Control-Allow-Origin: https://melodyquest.shinederu.lol");
-header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+// Align env loading with API/auth:
+// use the same vendor + .env source to keep DB/runtime config identical.
+$authVendorAutoload = __DIR__ . '/../auth/vendor/autoload.php';
+if (file_exists($authVendorAutoload)) {
+    require_once $authVendorAutoload;
+
+    if (class_exists('Dotenv\\Dotenv')) {
+        $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../auth');
+        $dotenv->safeLoad();
+    }
+}
+
+require_once __DIR__ . '/utils/response.php';
+require_once __DIR__ . '/utils/request.php';
+require_once __DIR__ . '/middlewares/AuthMiddleware.php';
+require_once __DIR__ . '/middlewares/AdminMiddleware.php';
+require_once __DIR__ . '/controllers/LobbyController.php';
+require_once __DIR__ . '/controllers/CatalogController.php';
+
+header('Content-Type: application/json; charset=utf-8');
+
+$body = get_body();
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$action = get_action($method, $body);
 
 try {
+    $lobbyController = new LobbyController();
+    $catalogController = new CatalogController();
 
-    switch ($_SERVER['REQUEST_METHOD']) {
-
+    switch ($method) {
         case 'GET':
-            switch ($_GET['action']) {
-                case 'logout':
-                    sendResponse((new UserController())->logout());
+            switch ($action) {
+                case 'getLobbyByCode':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->getByCode($userId, $_GET);
                     break;
+                case 'getPlaybackState':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->getPlayback($userId, $_GET);
+                    break;
+                case 'listTrackPool':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->listTrackPool($userId, $_GET);
+                    break;
+                case 'getRoundState':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->getRoundState($userId, $_GET);
+                    break;
+                case 'getScoreboard':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->getScoreboard($userId, $_GET);
+                    break;
+                case 'listPublicLobbies':
+                    AuthMiddleware::check();
+                    $lobbyController->listPublicLobbies();
+                    break;
+                case 'listCategories':
+                    AuthMiddleware::check();
+                    $catalogController->listCategories();
+                    break;
+                case 'listFamilies':
+                    AuthMiddleware::check();
+                    $catalogController->listFamilies($_GET);
+                    break;
+                case 'listTracks':
+                    AuthMiddleware::check();
+                    $catalogController->listTracks($_GET);
+                    break;
+                default:
+                    json_error('Unknown action for GET method', 404);
             }
-
             break;
 
         case 'POST':
-            switch ($_POST['action']) {
-                case 'register':
-                    sendResponse((new UserController())->register($_POST));
+            switch ($action) {
+                case 'createLobby':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->create($userId, $body);
                     break;
-
-                case 'login':
-                    sendResponse((new UserController())->login($_POST));
+                case 'joinLobby':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->join($userId, $body);
                     break;
+                case 'leaveLobby':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->leave($userId, $body);
+                    break;
+                case 'syncPlayback':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->syncPlayback($userId, $body);
+                    break;
+                case 'addTrackToPool':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->addTrackToPool($userId, $body);
+                    break;
+                case 'removeTrackFromPool':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->removeTrackFromPool($userId, $body);
+                    break;
+                case 'startRound':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->startRound($userId, $body);
+                    break;
+                case 'revealRound':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->revealRound($userId, $body);
+                    break;
+                case 'finishRound':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->finishRound($userId, $body);
+                    break;
+                case 'submitAnswer':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->submitAnswer($userId, $body);
+                    break;
+                case 'createCategory':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->createCategory($userId, $body);
+                    break;
+                case 'createFamily':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->createFamily($userId, $body);
+                    break;
+                case 'createTrack':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->createTrack($userId, $body);
+                    break;
+                default:
+                    json_error('Unknown action for POST method', 404);
             }
             break;
+
+        case 'PUT':
+            switch ($action) {
+                case 'updateLobbyConfig':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->updateConfig($userId, $body);
+                    break;
+                case 'updateCategory':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->updateCategory($body);
+                    break;
+                case 'updateFamily':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->updateFamily($body);
+                    break;
+                case 'updateTrack':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->updateTrack($body);
+                    break;
+                default:
+                    json_error('Unknown action for PUT method', 404);
+            }
+            break;
+
+        case 'DELETE':
+            switch ($action) {
+                case 'deleteCategory':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->deleteCategory(array_merge($_GET, $body));
+                    break;
+                case 'deleteFamily':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->deleteFamily(array_merge($_GET, $body));
+                    break;
+                case 'deleteTrack':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->deleteTrack(array_merge($_GET, $body));
+                    break;
+                default:
+                    json_error('Unknown action for DELETE method', 404);
+            }
+            break;
+
+        default:
+            json_error('Method not allowed', 405);
     }
-
+} catch (RuntimeException $e) {
+    json_error($e->getMessage(), 400);
 } catch (PDOException $e) {
-    http_response_code(500);
-    sendResponse(['message' => 'Database Error: ' . $e->getMessage()]);
-} catch (Exception $e) {
-    http_response_code(500);
-    sendResponse(['message' => 'Application Error: ' . $e->getMessage()]);
+    json_error('Database Error: ' . $e->getMessage(), 500);
 } catch (Throwable $e) {
-    http_response_code(500);
-    sendResponse(['message' => 'Unknown Error: ' . $e->getMessage()]);
-} finally {
-    exit;
+    json_error('Unknown Error: ' . $e->getMessage(), 500);
 }
-
-function sendResponse($infos)
-{
-    echo json_encode([
-        'message' => $infos['message'] ?? '',
-        'data' => $infos['data'] ?? ''
-    ]);
-}
-?>

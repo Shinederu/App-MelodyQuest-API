@@ -1,0 +1,7 @@
+<?php
+
+define('MQ_DEFAULT_MAX_PLAYERS', 8);
+define('MQ_MAX_MAX_PLAYERS', 24);
+define('MQ_DEFAULT_ROUND_DURATION', 30);
+define('MQ_DEFAULT_REVEAL_DURATION', 8);
+
