@@ -625,6 +625,38 @@ class LobbyService
         return $this->getLobbyById($lobbyId);
     }
 
+    public function getLobbyRealtimeSnapshot(int $userId, int $lobbyId): array
+    {
+        $this->requireLobbyMember($lobbyId, $userId);
+
+        $detail = $this->getLobbyById($lobbyId);
+        $pool = $this->listTrackPool($userId, $lobbyId);
+        $round = $this->getRoundState($userId, $lobbyId);
+        $playback = $this->getPlaybackState($lobbyId);
+        $scoreboard = $this->getScoreboard($userId, $lobbyId);
+
+        return [
+            'revision' => $this->computeLobbyRevision($lobbyId),
+            'lobby' => $detail['lobby'] ?? null,
+            'players' => $detail['players'] ?? [],
+            'pool' => $pool,
+            'round' => $round,
+            'playback' => $playback,
+            'scoreboard' => $scoreboard,
+            'server_time' => gmdate('c'),
+        ];
+    }
+
+    public function getPublicLobbiesRealtimeSnapshot(): array
+    {
+        $data = $this->listPublicLobbies();
+
+        return [
+            'revision' => $this->computePublicLobbiesRevision(),
+            'items' => $data['items'] ?? [],
+            'server_time' => gmdate('c'),
+        ];
+    }
     public function listPublicLobbies(): array
     {
         $stmt = $this->db->query(
@@ -641,6 +673,65 @@ class LobbyService
         return ['items' => $stmt->fetchAll()];
     }
 
+
+    private function computeLobbyRevision(int $lobbyId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT l.sync_revision,
+                    COALESCE(UNIX_TIMESTAMP(l.updated_at), 0) AS lobby_updated,
+                    COALESCE((SELECT MAX(UNIX_TIMESTAMP(lp.last_seen_at)) FROM mq_lobby_players lp WHERE lp.lobby_id = l.id), 0) AS players_updated,
+                    COALESCE((SELECT MAX(UNIX_TIMESTAMP(p.added_at)) FROM mq_lobby_track_pool p WHERE p.lobby_id = l.id), 0) AS pool_updated,
+                    COALESCE((SELECT MAX(r.id) FROM mq_rounds r WHERE r.lobby_id = l.id), 0) AS max_round_id,
+                    COALESCE((SELECT MAX(a.id)
+                              FROM mq_round_answers a
+                              JOIN mq_rounds r2 ON r2.id = a.round_id
+                              WHERE r2.lobby_id = l.id), 0) AS max_answer_id
+             FROM mq_lobbies l
+             WHERE l.id = :id
+             LIMIT 1'
+        );
+        $stmt->execute(['id' => $lobbyId]);
+        $row = $stmt->fetch();
+
+        if (!$row) {
+            return 0;
+        }
+
+        $seed = implode(':', [
+            (int)$row['sync_revision'],
+            (int)$row['lobby_updated'],
+            (int)$row['players_updated'],
+            (int)$row['pool_updated'],
+            (int)$row['max_round_id'],
+            (int)$row['max_answer_id'],
+        ]);
+
+        return abs((int)crc32($seed));
+    }
+
+    private function computePublicLobbiesRevision(): int
+    {
+        $stmt = $this->db->query(
+            'SELECT COUNT(*) AS c,
+                    COALESCE(MAX(UNIX_TIMESTAMP(updated_at)), 0) AS max_updated,
+                    COALESCE(SUM(sync_revision), 0) AS sync_sum
+             FROM mq_lobbies
+             WHERE visibility = "public"
+               AND status IN ("waiting", "playing")'
+        );
+        $row = $stmt->fetch();
+        if (!$row) {
+            return 0;
+        }
+
+        $seed = implode(':', [
+            (int)$row['c'],
+            (int)$row['max_updated'],
+            (int)$row['sync_sum'],
+        ]);
+
+        return abs((int)crc32($seed));
+    }
     private function requireLobby(int $lobbyId): array
     {
         $stmt = $this->db->prepare('SELECT * FROM mq_lobbies WHERE id = :id LIMIT 1');
@@ -754,3 +845,4 @@ class LobbyService
         throw new RuntimeException('Impossible de generer un code de lobby unique');
     }
 }
+

@@ -19,11 +19,14 @@ require_once __DIR__ . '/middlewares/AdminMiddleware.php';
 require_once __DIR__ . '/controllers/LobbyController.php';
 require_once __DIR__ . '/controllers/CatalogController.php';
 
-header('Content-Type: application/json; charset=utf-8');
-
 $body = get_body();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = get_action($method, $body);
+$isStreamAction = $method === 'GET' && in_array($action, ['streamLobby', 'streamPublicLobbies'], true);
+
+if (!$isStreamAction) {
+    header('Content-Type: application/json; charset=utf-8');
+}
 
 try {
     $lobbyController = new LobbyController();
@@ -55,6 +58,14 @@ try {
                 case 'listPublicLobbies':
                     AuthMiddleware::check();
                     $lobbyController->listPublicLobbies();
+                    break;
+                case 'streamLobby':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->streamLobby($userId, $_GET);
+                    break;
+                case 'streamPublicLobbies':
+                    AuthMiddleware::check();
+                    $lobbyController->streamPublicLobbies();
                     break;
                 case 'listCategories':
                     AuthMiddleware::check();

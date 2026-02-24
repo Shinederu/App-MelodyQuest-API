@@ -2,21 +2,21 @@
 
 ## Prerequis
 
-- Les fichiers `api/melodyquest/*` deployes sur le serveur API.
+- Les fichiers `API/melodyquest/*` deployes sur le serveur API.
 - Base de donnees `ShinedeCore` a jour avec `sql/001_melodyquest_core.sql`.
-- Au moins un utilisateur avec `users.role = 'admin'` pour les tests admin.
+- Au moins un utilisateur avec `users.is_admin = 1 (ou users.role = 'admin')` pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.lol` pointe vers le dossier serveur `MelodyQuest/` (index + assets).
 
 ## Variables d'environnement
 
 Configurer (PHP runtime):
 
-- `MQ_DB_TYPE`
-- `MQ_DB_HOST`
-- `MQ_DB_NAME=ShinedeCore`
-- `MQ_DB_USER`
-- `MQ_DB_PASS`
-- `MQ_DB_PORT`
+- `DB_TYPE` (ou `MQ_DB_TYPE`)
+- `DB_HOST` (ou `MQ_DB_HOST`)
+- `DB_NAME=ShinedeCore` (ou `MQ_DB_NAME`)
+- `DB_USER` (ou `MQ_DB_USER`)
+- `DB_PASS` (ou `MQ_DB_PASS`)
+- `DB_PORT` (ou `MQ_DB_PORT`)
 
 ## Smoke tests API (authentifie)
 
@@ -31,16 +31,18 @@ Configurer (PHP runtime):
 9. `POST /melodyquest/?action=revealRound`
 10. `POST /melodyquest/?action=finishRound`
 11. `GET /melodyquest/?action=getScoreboard&lobby_id=...`
+12. `GET /melodyquest/?action=streamLobby&lobby_id=...` (retourne `text/event-stream`)
+13. `GET /melodyquest/?action=streamPublicLobbies` (retourne `text/event-stream`)
 
 ## Smoke tests frontend
 
 1. Ouvrir `https://melodyquest.shinederu.lol/#/public`.
 2. Se connecter.
 3. Depuis `#/main`, creer un lobby ou rejoindre via `#/lobby-list`.
-4. Ajouter des tracks au pool (owner).
-5. Demarrer une manche.
-6. Soumettre une reponse.
-7. Verifier scoreboard et etat round.
+4. Verifier que la liste des lobbies se met a jour automatiquement.
+5. Verifier que les joueurs/status/scoreboard du lobby se mettent a jour automatiquement.
+6. Ajouter des tracks au pool (owner).
+7. Demarrer une manche, soumettre une reponse, reveal puis finish.
 8. Verifier les pages management avec un compte admin (`#/management*`).
 
 ## Criteres go/no-go
@@ -49,3 +51,7 @@ Configurer (PHP runtime):
 - Les droits owner/admin sont effectivement bloques pour les autres utilisateurs.
 - Le score se met a jour apres reponse.
 - Le round state et le playback state sont coherents entre joueurs.
+- Le mode SSE fonctionne (sinon fallback polling actif sans blocage UI).
+
+
+

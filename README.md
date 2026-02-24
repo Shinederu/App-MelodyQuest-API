@@ -11,7 +11,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Catalogue musical structure par categories et familles
 - Stockage des pistes via URL YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
-- Administration musicale reservee aux admins (role modifie manuellement en DB)
+- Administration musicale reservee aux admins (flag admin modifie manuellement en DB)
 
 ## Base de donnees
 
@@ -21,17 +21,6 @@ Migration:
 
 - `sql/001_melodyquest_core.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
-
-Tables principales:
-
-- `mq_categories`
-- `mq_families`
-- `mq_tracks`
-- `mq_lobbies`
-- `mq_lobby_players`
-- `mq_lobby_track_pool`
-- `mq_rounds`
-- `mq_round_answers`
 
 ## Actions API (index.php)
 
@@ -63,7 +52,12 @@ Authentifie:
 - `GET action=listFamilies&category_id=...` (optionnel)
 - `GET action=listTracks&family_id=...` (optionnel)
 
-Admin uniquement (`users.role = 'admin'`):
+Flux temps reel (SSE):
+
+- `GET action=streamLobby&lobby_id=...`
+- `GET action=streamPublicLobbies`
+
+Admin uniquement (`users.is_admin = 1 (ou users.role = 'admin')`):
 
 - `POST action=createCategory`
 - `POST action=createFamily`
@@ -75,7 +69,17 @@ Admin uniquement (`users.role = 'admin'`):
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`
 
+## Environnement
+
+Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
+
+- Utilise prioritairement `MQ_DB_*` si presents
+- Sinon fallback sur `DB_*`
+
 ## Regle admin
 
 Le statut admin n'est pas expose au frontend pour elevation.
-Il est derive du role stocke dans `users.role` et se gere manuellement en base.
+Il est derive de users.is_admin (si present) ou users.role='admin', et se gere manuellement en base.
+
+
+
