@@ -5,7 +5,7 @@
 - Les fichiers `API/melodyquest/*` deployes sur le serveur API.
 - Base de donnees `ShinedeCore` a jour avec `sql/001_melodyquest_core.sql`.
 - Au moins un utilisateur avec `users.is_admin = 1 (ou users.role = 'admin')` pour les tests admin.
-- Domaine front `https://melodyquest.shinederu.lol` pointe vers le dossier serveur `MelodyQuest/` (index + assets).
+- Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/` (index + assets).
 
 ## Variables d'environnement
 
@@ -36,7 +36,7 @@ Configurer (PHP runtime):
 
 ## Smoke tests frontend
 
-1. Ouvrir `https://melodyquest.shinederu.lol/#/public`.
+1. Ouvrir `https://melodyquest.shinederu.ch/#/public`.
 2. Se connecter.
 3. Depuis `#/main`, creer un lobby ou rejoindre via `#/lobby-list`.
 4. Verifier que la liste des lobbies se met a jour automatiquement.

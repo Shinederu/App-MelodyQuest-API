@@ -26,7 +26,7 @@ Migration:
 
 Base URL de production:
 
-- `https://api.shinederu.lol/melodyquest/`
+- `https://api.shinederu.ch/melodyquest/`
 - Dossier serveur: `API/melodyquest/`
 
 Authentifie:
