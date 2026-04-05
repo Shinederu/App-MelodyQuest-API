@@ -98,6 +98,10 @@ try {
                     $userId = AuthMiddleware::check();
                     $lobbyController->leave($userId, $body);
                     break;
+                case 'touchLobby':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->touch($userId, $body);
+                    break;
                 case 'kickPlayer':
                     $userId = AuthMiddleware::check();
                     $lobbyController->kickPlayer($userId, $body);

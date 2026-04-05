@@ -14,6 +14,8 @@ class LobbyService
 
     public function createLobby(int $ownerUserId, array $payload): array
     {
+        $this->cleanupStaleOwnerLobbies();
+
         $name = trim((string)($payload['name'] ?? 'Lobby'));
         if ($name === '') {
             $name = 'Lobby';
@@ -88,6 +90,8 @@ class LobbyService
 
     public function joinLobby(int $userId, string $lobbyCode): array
     {
+        $this->cleanupStaleOwnerLobbies();
+
         $stmt = $this->db->prepare('SELECT * FROM mq_lobbies WHERE lobby_code = :code LIMIT 1');
         $stmt->execute(['code' => strtoupper(trim($lobbyCode))]);
         $lobby = $stmt->fetch();
@@ -151,8 +155,20 @@ class LobbyService
         return ['ok' => true];
     }
 
+    public function touchLobbyPresence(int $userId, int $lobbyId): array
+    {
+        $this->requireLobbyMember($lobbyId, $userId);
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
+        return ['ok' => true];
+    }
+
     public function kickPlayer(int $ownerUserId, int $lobbyId, int $targetUserId): array
     {
+        $this->touchLobbyMember($lobbyId, $ownerUserId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $ownerUserId);
 
@@ -175,6 +191,9 @@ class LobbyService
 
     public function deleteLobby(int $ownerUserId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $ownerUserId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $ownerUserId);
 
@@ -186,6 +205,9 @@ class LobbyService
 
     public function updateLobbyConfig(int $userId, int $lobbyId, array $payload): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -250,6 +272,9 @@ class LobbyService
 
     public function addTrackToPool(int $userId, int $lobbyId, int $trackId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -275,6 +300,9 @@ class LobbyService
 
     public function removeTrackFromPool(int $userId, int $lobbyId, int $trackId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -286,6 +314,9 @@ class LobbyService
 
     public function listTrackPool(int $userId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $this->requireLobby($lobbyId);
         $this->requireLobbyMember($lobbyId, $userId);
 
@@ -303,6 +334,9 @@ class LobbyService
 
     public function startRound(int $userId, int $lobbyId, array $payload = []): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -383,6 +417,9 @@ class LobbyService
 
     public function revealCurrentRound(int $userId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -411,6 +448,9 @@ class LobbyService
 
     public function finishCurrentRound(int $userId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -449,6 +489,9 @@ class LobbyService
 
     public function submitAnswer(int $userId, int $lobbyId, array $payload): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireLobbyMember($lobbyId, $userId);
 
@@ -545,6 +588,9 @@ class LobbyService
 
     public function syncPlayback(int $userId, int $lobbyId, array $payload): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
@@ -578,6 +624,8 @@ class LobbyService
 
     public function getPlaybackState(int $lobbyId): array
     {
+        $this->cleanupStaleOwnerLobbies();
+
         $stmt = $this->db->prepare(
             'SELECT id, lobby_code, current_track_id, playback_state, playback_started_at, playback_offset_seconds, sync_revision
              FROM mq_lobbies
@@ -594,6 +642,9 @@ class LobbyService
 
     public function getRoundState(int $userId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $this->requireLobbyMember($lobbyId, $userId);
 
         $round = $this->getCurrentRoundRow($lobbyId);
@@ -637,6 +688,9 @@ class LobbyService
 
     public function getScoreboard(int $userId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $this->requireLobbyMember($lobbyId, $userId);
 
         $stmt = $this->db->prepare(
@@ -652,6 +706,8 @@ class LobbyService
 
     public function getLobbyById(int $lobbyId): array
     {
+        $this->cleanupStaleOwnerLobbies();
+
         $lobby = $this->requireLobby($lobbyId);
 
         $playersStmt = $this->db->prepare(
@@ -680,6 +736,8 @@ class LobbyService
 
     public function getLobbyByCodeForUser(int $userId, string $code): array
     {
+        $this->cleanupStaleOwnerLobbies();
+
         $stmt = $this->db->prepare('SELECT id, visibility FROM mq_lobbies WHERE lobby_code = :code LIMIT 1');
         $stmt->execute(['code' => strtoupper(trim($code))]);
         $row = $stmt->fetch();
@@ -693,11 +751,18 @@ class LobbyService
             throw new RuntimeException('Acces refuse a ce lobby prive');
         }
 
+        if ($isMember) {
+            $this->touchLobbyMember($lobbyId, $userId);
+        }
+
         return $this->getLobbyById($lobbyId);
     }
 
     public function getLobbyRealtimeSnapshot(int $userId, int $lobbyId): array
     {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
         $this->requireLobbyMember($lobbyId, $userId);
 
         $detail = $this->getLobbyById($lobbyId);
@@ -720,6 +785,7 @@ class LobbyService
 
     public function getPublicLobbiesRealtimeSnapshot(): array
     {
+        $this->cleanupStaleOwnerLobbies();
         $data = $this->listPublicLobbies();
 
         return [
@@ -730,6 +796,8 @@ class LobbyService
     }
     public function listPublicLobbies(): array
     {
+        $this->cleanupStaleOwnerLobbies();
+
         $stmt = $this->db->query(
             'SELECT l.id, l.lobby_code, l.name, l.status, l.max_players, l.owner_user_id, u.username AS owner_username,
                     (SELECT COUNT(*) FROM mq_lobby_players lp WHERE lp.lobby_id = l.id) AS players_count
@@ -742,6 +810,44 @@ class LobbyService
         );
 
         return ['items' => $stmt->fetchAll()];
+    }
+
+    private function touchLobbyMember(int $lobbyId, int $userId): void
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET last_seen_at = NOW()
+             WHERE lobby_id = :lobby_id AND user_id = :user_id'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'user_id' => $userId,
+        ]);
+    }
+
+    private function cleanupStaleOwnerLobbies(): void
+    {
+        $timeout = max(1, (int)MQ_OWNER_STALE_TIMEOUT_SECONDS);
+        $stmt = $this->db->prepare(
+            'SELECT l.id
+             FROM mq_lobbies l
+             JOIN mq_lobby_players lp
+               ON lp.lobby_id = l.id
+              AND lp.user_id = l.owner_user_id
+             WHERE l.status IN ("waiting", "playing", "finished")
+               AND lp.last_seen_at < (NOW() - INTERVAL ' . $timeout . ' SECOND)'
+        );
+        $stmt->execute();
+        $lobbyIds = array_map('intval', array_column($stmt->fetchAll(), 'id'));
+
+        if (empty($lobbyIds)) {
+            return;
+        }
+
+        $delete = $this->db->prepare('DELETE FROM mq_lobbies WHERE id = :id');
+        foreach ($lobbyIds as $lobbyId) {
+            $delete->execute(['id' => $lobbyId]);
+        }
     }
 
 
