@@ -40,6 +40,29 @@ class LobbyController
         json_success('Lobby quitte', $data);
     }
 
+    public function kickPlayer(int $userId, array $payload): void
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        $targetUserId = (int)($payload['target_user_id'] ?? 0);
+        if ($lobbyId <= 0 || $targetUserId <= 0) {
+            json_error('lobby_id et target_user_id requis', 400);
+        }
+
+        $data = $this->service->kickPlayer($userId, $lobbyId, $targetUserId);
+        json_success('Joueur exclu', $data);
+    }
+
+    public function delete(int $userId, array $payload): void
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        if ($lobbyId <= 0) {
+            json_error('lobby_id requis', 400);
+        }
+
+        $data = $this->service->deleteLobby($userId, $lobbyId);
+        json_success('Lobby supprime', $data);
+    }
+
     public function getByCode(int $userId, array $payload): void
     {
         $code = (string)($payload['lobby_code'] ?? ($_GET['lobby_code'] ?? ''));

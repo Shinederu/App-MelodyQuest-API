@@ -22,6 +22,9 @@ class LobbyService
         $maxPlayers = (int)($payload['max_players'] ?? MQ_DEFAULT_MAX_PLAYERS);
         $maxPlayers = max(2, min($maxPlayers, MQ_MAX_MAX_PLAYERS));
 
+        $totalRounds = (int)($payload['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
+        $totalRounds = max(1, min($totalRounds, 50));
+
         $roundDuration = (int)($payload['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION);
         $roundDuration = max(10, min($roundDuration, 300));
 
@@ -38,14 +41,16 @@ class LobbyService
             $guessMode = 'both';
         }
 
+        $selectedCategoryIds = $this->normalizeCategoryIds($payload['selected_category_ids'] ?? []);
+
         $code = $this->generateLobbyCode();
 
         $this->db->beginTransaction();
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO mq_lobbies
-                (lobby_code, name, owner_user_id, status, visibility, max_players, round_duration_seconds, reveal_duration_seconds, guess_mode)
-                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :round_duration, :reveal_duration, :guess_mode)'
+                (lobby_code, name, owner_user_id, status, visibility, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids)
+                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids)'
             );
             $stmt->execute([
                 'code' => $code,
@@ -53,9 +58,11 @@ class LobbyService
                 'owner' => $ownerUserId,
                 'visibility' => $visibility,
                 'max_players' => $maxPlayers,
+                'total_rounds' => $totalRounds,
                 'round_duration' => $roundDuration,
                 'reveal_duration' => $revealDuration,
                 'guess_mode' => $guessMode,
+                'selected_category_ids' => $this->encodeCategoryIds($selectedCategoryIds),
             ]);
 
             $lobbyId = (int)$this->db->lastInsertId();
@@ -144,6 +151,39 @@ class LobbyService
         return ['ok' => true];
     }
 
+    public function kickPlayer(int $ownerUserId, int $lobbyId, int $targetUserId): array
+    {
+        $lobby = $this->requireLobby($lobbyId);
+        $this->requireOwner($lobby, $ownerUserId);
+
+        if ($targetUserId === $ownerUserId) {
+            throw new RuntimeException('Le createur ne peut pas s exclure lui-meme');
+        }
+
+        $this->requireLobbyMember($lobbyId, $targetUserId);
+
+        $stmt = $this->db->prepare(
+            'DELETE FROM mq_lobby_players WHERE lobby_id = :lobby_id AND user_id = :user_id'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'user_id' => $targetUserId,
+        ]);
+
+        return $this->getLobbyById($lobbyId);
+    }
+
+    public function deleteLobby(int $ownerUserId, int $lobbyId): array
+    {
+        $lobby = $this->requireLobby($lobbyId);
+        $this->requireOwner($lobby, $ownerUserId);
+
+        $stmt = $this->db->prepare('DELETE FROM mq_lobbies WHERE id = :id');
+        $stmt->execute(['id' => $lobbyId]);
+
+        return ['ok' => true, 'deleted_lobby_id' => $lobbyId];
+    }
+
     public function updateLobbyConfig(int $userId, int $lobbyId, array $payload): array
     {
         $lobby = $this->requireLobby($lobbyId);
@@ -169,6 +209,11 @@ class LobbyService
             $fields[] = 'max_players = :max_players';
             $params['max_players'] = $maxPlayers;
         }
+        if (isset($payload['total_rounds'])) {
+            $totalRounds = max(1, min((int)$payload['total_rounds'], 50));
+            $fields[] = 'total_rounds = :total_rounds';
+            $params['total_rounds'] = $totalRounds;
+        }
         if (isset($payload['round_duration_seconds'])) {
             $duration = max(10, min((int)$payload['round_duration_seconds'], 300));
             $fields[] = 'round_duration_seconds = :round_duration_seconds';
@@ -186,6 +231,12 @@ class LobbyService
             }
             $fields[] = 'guess_mode = :guess_mode';
             $params['guess_mode'] = $guessMode;
+        }
+        if (array_key_exists('selected_category_ids', $payload)) {
+            $fields[] = 'selected_category_ids = :selected_category_ids';
+            $params['selected_category_ids'] = $this->encodeCategoryIds(
+                $this->normalizeCategoryIds($payload['selected_category_ids'])
+            );
         }
 
         if (!empty($fields)) {
@@ -258,6 +309,12 @@ class LobbyService
         $running = $this->getCurrentRoundRow($lobbyId);
         if ($running) {
             throw new RuntimeException('Une manche est deja en cours');
+        }
+
+        $finishedRounds = $this->countFinishedRounds($lobbyId);
+        $targetRounds = max(1, (int)($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS));
+        if ($finishedRounds >= $targetRounds) {
+            throw new RuntimeException('Toutes les manches de ce lobby ont deja ete jouees');
         }
 
         $trackId = isset($payload['track_id']) ? (int)$payload['track_id'] : 0;
@@ -373,10 +430,16 @@ class LobbyService
         $this->db->prepare(
             'UPDATE mq_lobbies
              SET playback_state = "stopped",
+                 status = :status,
                  playback_offset_seconds = 0,
                  sync_revision = sync_revision + 1
              WHERE id = :id'
-        )->execute(['id' => $lobbyId]);
+        )->execute([
+            'status' => $this->countFinishedRounds($lobbyId) >= max(1, (int)($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS))
+                ? 'finished'
+                : 'waiting',
+            'id' => $lobbyId,
+        ]);
 
         return [
             'round' => $this->getRoundState($userId, $lobbyId),
@@ -601,6 +664,14 @@ class LobbyService
         $playersStmt->execute(['id' => $lobbyId]);
         $players = $playersStmt->fetchAll();
 
+        $lobby['selected_category_ids'] = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
+
+        $currentRound = $this->getCurrentRoundRow($lobbyId);
+        $roundsFinished = $this->countFinishedRounds($lobbyId);
+        $lobby['rounds_finished'] = $roundsFinished;
+        $lobby['rounds_remaining'] = max(0, (int)$lobby['total_rounds'] - $roundsFinished);
+        $lobby['current_round_number'] = $currentRound ? (int)$currentRound['round_number'] : null;
+
         return [
             'lobby' => $lobby,
             'players' => $players,
@@ -783,33 +854,118 @@ class LobbyService
 
     private function pickTrackForLobby(int $lobbyId): int
     {
-        $fromPool = $this->db->prepare(
-            'SELECT t.id
-             FROM mq_lobby_track_pool p
-             JOIN mq_tracks t ON t.id = p.track_id
-             WHERE p.lobby_id = :lobby_id
-               AND t.is_active = 1
-             ORDER BY RAND()
-             LIMIT 1'
+        $lobby = $this->requireLobby($lobbyId);
+        $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
+        $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
+
+        $trackId = $this->pickEligibleTrack($selectedCategoryIds, $usedTrackIds);
+        if ($trackId !== null) {
+            return $trackId;
+        }
+
+        $trackId = $this->pickEligibleTrack($selectedCategoryIds, []);
+        if ($trackId !== null) {
+            return $trackId;
+        }
+
+        throw new RuntimeException('Aucune musique disponible pour les categories selectionnees');
+    }
+
+    private function getPlayedTrackIds(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare('SELECT DISTINCT track_id FROM mq_rounds WHERE lobby_id = :lobby_id');
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return array_map('intval', array_column($stmt->fetchAll(), 'track_id'));
+    }
+
+    private function pickEligibleTrack(array $selectedCategoryIds, array $excludedTrackIds): ?int
+    {
+        $where = ['t.is_active = 1'];
+        $params = [];
+
+        if (!empty($selectedCategoryIds)) {
+            $categoryPlaceholders = [];
+            foreach ($selectedCategoryIds as $index => $categoryId) {
+                $key = 'category_' . $index;
+                $categoryPlaceholders[] = ':' . $key;
+                $params[$key] = $categoryId;
+            }
+            $where[] = 'f.category_id IN (' . implode(', ', $categoryPlaceholders) . ')';
+        }
+
+        if (!empty($excludedTrackIds)) {
+            $trackPlaceholders = [];
+            foreach ($excludedTrackIds as $index => $trackId) {
+                $key = 'track_' . $index;
+                $trackPlaceholders[] = ':' . $key;
+                $params[$key] = $trackId;
+            }
+            $where[] = 't.id NOT IN (' . implode(', ', $trackPlaceholders) . ')';
+        }
+
+        $sql = 'SELECT t.id
+                FROM mq_tracks t
+                JOIN mq_families f ON f.id = t.family_id
+                WHERE ' . implode(' AND ', $where) . '
+                ORDER BY RAND()
+                LIMIT 1';
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $row = $stmt->fetch();
+
+        return $row && !empty($row['id']) ? (int)$row['id'] : null;
+    }
+
+    private function countFinishedRounds(int $lobbyId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) AS c FROM mq_rounds WHERE lobby_id = :lobby_id AND status = "finished"'
         );
-        $fromPool->execute(['lobby_id' => $lobbyId]);
-        $row = $fromPool->fetch();
-        if ($row && !empty($row['id'])) {
-            return (int)$row['id'];
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function normalizeCategoryIds($raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
         }
 
-        $fallback = $this->db->query(
-            'SELECT id
-             FROM mq_tracks
-             WHERE is_active = 1
-             ORDER BY RAND()
-             LIMIT 1'
-        )->fetch();
-        if ($fallback && !empty($fallback['id'])) {
-            return (int)$fallback['id'];
+        $ids = [];
+        foreach ($raw as $value) {
+            $id = (int)$value;
+            if ($id > 0) {
+                $ids[$id] = $id;
+            }
         }
 
-        throw new RuntimeException('Aucune musique disponible');
+        return array_values($ids);
+    }
+
+    private function encodeCategoryIds(array $ids): ?string
+    {
+        if (empty($ids)) {
+            return null;
+        }
+
+        return json_encode(array_values($ids), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    private function decodeCategoryIds($raw): array
+    {
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        return $this->normalizeCategoryIds($decoded);
     }
 
     private function isGuessCorrect(string $guess, string $expected): bool

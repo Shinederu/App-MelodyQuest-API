@@ -98,6 +98,14 @@ try {
                     $userId = AuthMiddleware::check();
                     $lobbyController->leave($userId, $body);
                     break;
+                case 'kickPlayer':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->kickPlayer($userId, $body);
+                    break;
+                case 'deleteLobby':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->delete($userId, $body);
+                    break;
                 case 'syncPlayback':
                     $userId = AuthMiddleware::check();
                     $lobbyController->syncPlayback($userId, $body);
