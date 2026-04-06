@@ -316,7 +316,6 @@ class CatalogService
 
         $sets = [];
         $params = ['id' => $id];
-        $shouldResetValidation = false;
 
         if (
             array_key_exists('family_id', $payload)
@@ -326,7 +325,6 @@ class CatalogService
             $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
             $sets[] = 'family_id = :family_id';
             $params['family_id'] = $familyId;
-            $shouldResetValidation = true;
         }
 
         if (array_key_exists('title', $payload)) {
@@ -336,12 +334,10 @@ class CatalogService
             }
             $sets[] = 'title = :title';
             $params['title'] = $title;
-            $shouldResetValidation = true;
         }
         if (array_key_exists('artist', $payload)) {
             $sets[] = 'artist = :artist';
             $params['artist'] = trim((string)$payload['artist']);
-            $shouldResetValidation = true;
         }
         if (array_key_exists('youtube_url', $payload)) {
             $url = trim((string)$payload['youtube_url']);
@@ -350,45 +346,38 @@ class CatalogService
             }
             $sets[] = 'youtube_url = :youtube_url';
             $params['youtube_url'] = $url;
-            $shouldResetValidation = true;
         }
         if (array_key_exists('youtube_video_id', $payload)) {
             $sets[] = 'youtube_video_id = :youtube_video_id';
             $params['youtube_video_id'] = trim((string)$payload['youtube_video_id']);
-            $shouldResetValidation = true;
         }
         if (array_key_exists('duration_seconds', $payload)) {
             $sets[] = 'duration_seconds = :duration_seconds';
             $params['duration_seconds'] = $payload['duration_seconds'] !== null ? (int)$payload['duration_seconds'] : null;
-            $shouldResetValidation = true;
         }
         if (array_key_exists('start_offset_seconds', $payload)) {
             $sets[] = 'start_offset_seconds = :start_offset_seconds';
             $params['start_offset_seconds'] = max(0, (int)$payload['start_offset_seconds']);
-            $shouldResetValidation = true;
         }
         if (array_key_exists('end_offset_seconds', $payload)) {
             $sets[] = 'end_offset_seconds = :end_offset_seconds';
             $params['end_offset_seconds'] = $payload['end_offset_seconds'] !== null ? (int)$payload['end_offset_seconds'] : null;
-            $shouldResetValidation = true;
         }
         if (array_key_exists('is_active', $payload)) {
             $sets[] = 'is_active = :is_active';
             $params['is_active'] = (int)((bool)$payload['is_active']);
         }
 
-        if ($shouldResetValidation) {
-            $sets[] = 'is_validated = :is_validated';
-            $sets[] = 'validated_by = :validated_by';
-            $sets[] = 'validated_at = :validated_at';
-            $params['is_validated'] = 0;
-            $params['validated_by'] = null;
-            $params['validated_at'] = null;
-        }
-
         if (empty($sets)) {
             throw new RuntimeException('Aucun champ a modifier');
         }
+
+        $sets[] = 'is_validated = :is_validated';
+        $sets[] = 'validated_by = :validated_by';
+        $sets[] = 'validated_at = :validated_at';
+        $params['is_validated'] = 0;
+        $params['validated_by'] = null;
+        $params['validated_at'] = null;
 
         $sql = 'UPDATE mq_tracks SET ' . implode(', ', $sets) . ' WHERE id = :id';
         $stmt = $this->db->prepare($sql);
@@ -418,6 +407,28 @@ class CatalogService
         ]);
 
         return ['id' => $trackId, 'validated' => 1, 'updated' => $stmt->rowCount()];
+    }
+
+    public function unvalidateTrack(int $trackId): array
+    {
+        if ($trackId <= 0) {
+            throw new RuntimeException('id musique requis');
+        }
+
+        $this->requireTrackRecord($trackId);
+
+        $stmt = $this->db->prepare(
+            'UPDATE mq_tracks
+             SET is_validated = 0,
+                 validated_by = NULL,
+                 validated_at = NULL
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            'id' => $trackId,
+        ]);
+
+        return ['id' => $trackId, 'validated' => 0, 'updated' => $stmt->rowCount()];
     }
 
     public function deleteCategory(int $id): array

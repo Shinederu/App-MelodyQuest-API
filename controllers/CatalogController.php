@@ -77,6 +77,13 @@ class CatalogController
         json_success('Musique validee', $result);
     }
 
+    public function unvalidateTrack(array $payload): void
+    {
+        $trackId = (int)($payload['track_id'] ?? $payload['id'] ?? 0);
+        $result = $this->service->unvalidateTrack($trackId);
+        json_success('Musique repassee en attente de validation', $result);
+    }
+
     public function deleteCategory(array $payload): void
     {
         $id = (int)($payload['id'] ?? 0);

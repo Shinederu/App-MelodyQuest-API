@@ -163,6 +163,11 @@ try {
                     AdminMiddleware::check($userId);
                     $catalogController->validateTrack($userId, $body);
                     break;
+                case 'unvalidateTrack':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->unvalidateTrack($body);
+                    break;
                 default:
                     json_error('Unknown action for POST method', 404);
             }
