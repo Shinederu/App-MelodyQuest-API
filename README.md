@@ -9,6 +9,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Creation/rejoindre un lobby
 - Parametrage du lobby reserve au createur
 - Catalogue musical structure par categories et familles
+- Validation manuelle des nouvelles musiques avant usage en partie
 - Stockage des pistes via URL YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
 - Administration musicale reservee aux admins (flag admin modifie manuellement en DB)
@@ -20,6 +21,8 @@ Le schema MelodyQuest est installe dans `ShinedeCore` avec des tables prefixees 
 Migration:
 
 - `sql/001_melodyquest_core.sql`
+- `sql/003_melodyquest_family_aliases.sql`
+- `sql/004_melodyquest_track_validation.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 ## Actions API (index.php)
@@ -62,9 +65,11 @@ Admin uniquement (`users.is_admin = 1 (ou users.role = 'admin')`):
 - `POST action=createCategory`
 - `POST action=createFamily`
 - `POST action=createTrack`
+- `GET action=listPendingTracks`
 - `PUT action=updateCategory`
 - `PUT action=updateFamily`
 - `PUT action=updateTrack`
+- `POST action=validateTrack`
 - `DELETE action=deleteCategory`
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`

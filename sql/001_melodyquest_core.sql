@@ -49,15 +49,22 @@ CREATE TABLE IF NOT EXISTS mq_tracks (
   start_offset_seconds INT NOT NULL DEFAULT 0,
   end_offset_seconds INT DEFAULT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  is_validated TINYINT(1) NOT NULL DEFAULT 0,
+  validated_by INT DEFAULT NULL,
+  validated_at DATETIME DEFAULT NULL,
   created_by INT DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_mq_tracks_family (family_id),
   KEY idx_mq_tracks_video_id (youtube_video_id),
+  KEY idx_mq_tracks_validation (is_validated, is_active),
   CONSTRAINT fk_mq_tracks_family
     FOREIGN KEY (family_id) REFERENCES mq_families(id)
     ON DELETE CASCADE,
+  CONSTRAINT fk_mq_tracks_validated_by
+    FOREIGN KEY (validated_by) REFERENCES users(id)
+    ON DELETE SET NULL,
   CONSTRAINT fk_mq_tracks_created_by
     FOREIGN KEY (created_by) REFERENCES users(id)
     ON DELETE SET NULL

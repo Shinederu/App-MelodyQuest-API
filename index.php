@@ -79,6 +79,11 @@ try {
                     AuthMiddleware::check();
                     $catalogController->listTracks($_GET);
                     break;
+                case 'listPendingTracks':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->listPendingTracks();
+                    break;
                 default:
                     json_error('Unknown action for GET method', 404);
             }
@@ -152,6 +157,11 @@ try {
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
                     $catalogController->createTrack($userId, $body);
+                    break;
+                case 'validateTrack':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->validateTrack($userId, $body);
                     break;
                 default:
                     json_error('Unknown action for POST method', 404);

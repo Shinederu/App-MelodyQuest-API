@@ -50,7 +50,8 @@ class CatalogService
         if ($familyId) {
             $stmt = $this->db->prepare(
                 'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                        t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds, t.is_active
+                        t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds,
+                        t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
                  FROM mq_tracks t
                  JOIN mq_families f ON f.id = t.family_id
                  JOIN mq_categories c ON c.id = f.category_id
@@ -63,11 +64,29 @@ class CatalogService
 
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds, t.is_active
+                    t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds,
+                    t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              JOIN mq_categories c ON c.id = f.category_id
              ORDER BY c.name ASC, f.name ASC, t.title ASC'
+        );
+        return $stmt->fetchAll();
+    }
+
+    public function listPendingTracks(): array
+    {
+        $stmt = $this->db->query(
+            'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
+                    t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds,
+                    t.is_active, t.is_validated, t.created_at, t.updated_at,
+                    creator.username AS created_by_username
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             JOIN mq_categories c ON c.id = f.category_id
+             LEFT JOIN users creator ON creator.id = t.created_by
+             WHERE t.is_validated = 0
+             ORDER BY t.created_at ASC, t.id ASC'
         );
         return $stmt->fetchAll();
     }
@@ -144,9 +163,9 @@ class CatalogService
 
         $stmt = $this->db->prepare(
             'INSERT INTO mq_tracks
-             (family_id, title, artist, youtube_url, youtube_video_id, duration_seconds, start_offset_seconds, end_offset_seconds, is_active, created_by)
+             (family_id, title, artist, youtube_url, youtube_video_id, duration_seconds, start_offset_seconds, end_offset_seconds, is_active, is_validated, validated_by, validated_at, created_by)
              VALUES
-             (:family_id, :title, :artist, :youtube_url, :youtube_video_id, :duration_seconds, :start_offset_seconds, :end_offset_seconds, :is_active, :created_by)'
+             (:family_id, :title, :artist, :youtube_url, :youtube_video_id, :duration_seconds, :start_offset_seconds, :end_offset_seconds, :is_active, :is_validated, :validated_by, :validated_at, :created_by)'
         );
         $stmt->execute([
             'family_id' => $familyId,
@@ -158,6 +177,9 @@ class CatalogService
             'start_offset_seconds' => isset($payload['start_offset_seconds']) ? (int)$payload['start_offset_seconds'] : 0,
             'end_offset_seconds' => isset($payload['end_offset_seconds']) ? (int)$payload['end_offset_seconds'] : null,
             'is_active' => isset($payload['is_active']) ? (int)((bool)$payload['is_active']) : 1,
+            'is_validated' => 0,
+            'validated_by' => null,
+            'validated_at' => null,
             'created_by' => $userId,
         ]);
 
@@ -290,8 +312,11 @@ class CatalogService
             throw new RuntimeException('id musique requis');
         }
 
+        $this->requireTrackRecord($id);
+
         $sets = [];
         $params = ['id' => $id];
+        $shouldResetValidation = false;
 
         if (
             array_key_exists('family_id', $payload)
@@ -301,6 +326,7 @@ class CatalogService
             $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
             $sets[] = 'family_id = :family_id';
             $params['family_id'] = $familyId;
+            $shouldResetValidation = true;
         }
 
         if (array_key_exists('title', $payload)) {
@@ -310,10 +336,12 @@ class CatalogService
             }
             $sets[] = 'title = :title';
             $params['title'] = $title;
+            $shouldResetValidation = true;
         }
         if (array_key_exists('artist', $payload)) {
             $sets[] = 'artist = :artist';
             $params['artist'] = trim((string)$payload['artist']);
+            $shouldResetValidation = true;
         }
         if (array_key_exists('youtube_url', $payload)) {
             $url = trim((string)$payload['youtube_url']);
@@ -322,26 +350,40 @@ class CatalogService
             }
             $sets[] = 'youtube_url = :youtube_url';
             $params['youtube_url'] = $url;
+            $shouldResetValidation = true;
         }
         if (array_key_exists('youtube_video_id', $payload)) {
             $sets[] = 'youtube_video_id = :youtube_video_id';
             $params['youtube_video_id'] = trim((string)$payload['youtube_video_id']);
+            $shouldResetValidation = true;
         }
         if (array_key_exists('duration_seconds', $payload)) {
             $sets[] = 'duration_seconds = :duration_seconds';
             $params['duration_seconds'] = $payload['duration_seconds'] !== null ? (int)$payload['duration_seconds'] : null;
+            $shouldResetValidation = true;
         }
         if (array_key_exists('start_offset_seconds', $payload)) {
             $sets[] = 'start_offset_seconds = :start_offset_seconds';
             $params['start_offset_seconds'] = max(0, (int)$payload['start_offset_seconds']);
+            $shouldResetValidation = true;
         }
         if (array_key_exists('end_offset_seconds', $payload)) {
             $sets[] = 'end_offset_seconds = :end_offset_seconds';
             $params['end_offset_seconds'] = $payload['end_offset_seconds'] !== null ? (int)$payload['end_offset_seconds'] : null;
+            $shouldResetValidation = true;
         }
         if (array_key_exists('is_active', $payload)) {
             $sets[] = 'is_active = :is_active';
             $params['is_active'] = (int)((bool)$payload['is_active']);
+        }
+
+        if ($shouldResetValidation) {
+            $sets[] = 'is_validated = :is_validated';
+            $sets[] = 'validated_by = :validated_by';
+            $sets[] = 'validated_at = :validated_at';
+            $params['is_validated'] = 0;
+            $params['validated_by'] = null;
+            $params['validated_at'] = null;
         }
 
         if (empty($sets)) {
@@ -353,6 +395,29 @@ class CatalogService
         $stmt->execute($params);
 
         return ['id' => $id, 'updated' => $stmt->rowCount()];
+    }
+
+    public function validateTrack(int $userId, int $trackId): array
+    {
+        if ($trackId <= 0) {
+            throw new RuntimeException('id musique requis');
+        }
+
+        $this->requireTrackRecord($trackId);
+
+        $stmt = $this->db->prepare(
+            'UPDATE mq_tracks
+             SET is_validated = 1,
+                 validated_by = :validated_by,
+                 validated_at = NOW()
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            'id' => $trackId,
+            'validated_by' => $userId,
+        ]);
+
+        return ['id' => $trackId, 'validated' => 1, 'updated' => $stmt->rowCount()];
     }
 
     public function deleteCategory(int $id): array
@@ -473,6 +538,19 @@ class CatalogService
 
         if (!$row) {
             throw new RuntimeException('id famille requis');
+        }
+
+        return $row;
+    }
+
+    private function requireTrackRecord(int $trackId): array
+    {
+        $stmt = $this->db->prepare('SELECT id, family_id, title FROM mq_tracks WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $trackId]);
+        $row = $stmt->fetch();
+
+        if (!$row) {
+            throw new RuntimeException('id musique requis');
         }
 
         return $row;

@@ -3,7 +3,7 @@
 ## Prerequis
 
 - Les fichiers `API/melodyquest/*` deployes sur le serveur API.
-- Base de donnees `ShinedeCore` a jour avec `sql/001_melodyquest_core.sql`.
+- Base de donnees `ShinedeCore` a jour avec `sql/001_melodyquest_core.sql`, `sql/003_melodyquest_family_aliases.sql` et `sql/004_melodyquest_track_validation.sql`.
 - Au moins un utilisateur avec `users.is_admin = 1 (ou users.role = 'admin')` pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/` (index + assets).
 
@@ -44,6 +44,7 @@ Configurer (PHP runtime):
 6. Ajouter des tracks au pool (owner).
 7. Demarrer une manche, soumettre une reponse, reveal puis finish.
 8. Verifier les pages management avec un compte admin (`#/management*`).
+9. Ajouter une musique, verifier qu'elle apparait dans `#/management-validation`, puis la valider apres controle de la preview YouTube.
 
 ## Criteres go/no-go
 

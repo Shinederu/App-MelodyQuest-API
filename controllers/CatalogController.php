@@ -29,6 +29,11 @@ class CatalogController
         json_success(null, ['items' => $this->service->listTracks($familyId ?: null)]);
     }
 
+    public function listPendingTracks(): void
+    {
+        json_success(null, ['items' => $this->service->listPendingTracks()]);
+    }
+
     public function createCategory(int $userId, array $payload): void
     {
         $result = $this->service->createCategory($userId, $payload);
@@ -44,7 +49,7 @@ class CatalogController
     public function createTrack(int $userId, array $payload): void
     {
         $result = $this->service->createTrack($userId, $payload);
-        json_success('Musique ajoutee', $result, 201);
+        json_success('Musique ajoutee en attente de validation', $result, 201);
     }
 
     public function updateCategory(array $payload): void
@@ -62,7 +67,14 @@ class CatalogController
     public function updateTrack(int $userId, array $payload): void
     {
         $result = $this->service->updateTrack($userId, $payload);
-        json_success('Musique mise a jour', $result);
+        json_success('Musique mise a jour et repassee en attente de validation', $result);
+    }
+
+    public function validateTrack(int $userId, array $payload): void
+    {
+        $trackId = (int)($payload['track_id'] ?? $payload['id'] ?? 0);
+        $result = $this->service->validateTrack($userId, $trackId);
+        json_success('Musique validee', $result);
     }
 
     public function deleteCategory(array $payload): void

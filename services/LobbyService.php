@@ -279,10 +279,10 @@ class LobbyService
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
 
-        $trackStmt = $this->db->prepare('SELECT id FROM mq_tracks WHERE id = :id AND is_active = 1 LIMIT 1');
+        $trackStmt = $this->db->prepare('SELECT id FROM mq_tracks WHERE id = :id AND is_active = 1 AND is_validated = 1 LIMIT 1');
         $trackStmt->execute(['id' => $trackId]);
         if (!$trackStmt->fetch()) {
-            throw new RuntimeException('Track introuvable ou inactive');
+            throw new RuntimeException('Track introuvable, inactive ou non validee');
         }
 
         $stmt = $this->db->prepare(
@@ -324,7 +324,7 @@ class LobbyService
         $stmt = $this->db->prepare(
             'SELECT p.track_id, t.title, t.artist, t.youtube_url, t.youtube_video_id, t.family_id
              FROM mq_lobby_track_pool p
-             JOIN mq_tracks t ON t.id = p.track_id
+             JOIN mq_tracks t ON t.id = p.track_id AND t.is_active = 1 AND t.is_validated = 1
              WHERE p.lobby_id = :lobby_id
              ORDER BY p.added_at ASC'
         );
@@ -360,6 +360,7 @@ class LobbyService
                 'SELECT id FROM mq_tracks
                  WHERE id = :id
                    AND is_active = 1
+                   AND is_validated = 1
                    AND (
                      EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :lobby_id AND p.track_id = :id)
                      OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :lobby_id)
@@ -368,7 +369,7 @@ class LobbyService
             );
             $trackCheck->execute(['id' => $trackId, 'lobby_id' => $lobbyId]);
             if (!$trackCheck->fetch()) {
-                throw new RuntimeException('Track invalide pour ce lobby');
+                throw new RuntimeException('Track invalide pour ce lobby ou non validee');
             }
         }
 
@@ -1015,7 +1016,7 @@ class LobbyService
 
     private function pickEligibleTrack(array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
     {
-        $where = ['t.is_active = 1'];
+        $where = ['t.is_active = 1', 't.is_validated = 1'];
         $params = [];
 
         if (!empty($selectedCategoryIds)) {
