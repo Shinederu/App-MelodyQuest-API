@@ -53,9 +53,9 @@ class CatalogController
         json_success('Categorie mise a jour', $result);
     }
 
-    public function updateFamily(array $payload): void
+    public function updateFamily(int $userId, array $payload): void
     {
-        $result = $this->service->updateFamily($payload);
+        $result = $this->service->updateFamily($userId, $payload);
         json_success('Famille mise a jour', $result);
     }
 

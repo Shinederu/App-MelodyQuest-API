@@ -6,6 +6,7 @@ require_once __DIR__ . '/../config/config.php';
 class LobbyService
 {
     private PDO $db;
+    private ?bool $familyAliasesTableExists = null;
 
     public function __construct()
     {
@@ -500,7 +501,13 @@ class LobbyService
             throw new RuntimeException('Aucune manche en cours');
         }
 
-        $trackStmt = $this->db->prepare('SELECT title, artist FROM mq_tracks WHERE id = :id LIMIT 1');
+        $trackStmt = $this->db->prepare(
+            'SELECT t.title, t.artist, t.family_id, f.name AS family_name
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             WHERE t.id = :id
+             LIMIT 1'
+        );
         $trackStmt->execute(['id' => $round['track_id']]);
         $track = $trackStmt->fetch();
         if (!$track) {
@@ -513,9 +520,10 @@ class LobbyService
         $isCorrectTitle = 0;
         $isCorrectArtist = 0;
         $mode = (string)$lobby['guess_mode'];
+        $titleVariants = $this->getExpectedTitleVariants((int)$track['family_id'], (string)$track['family_name']);
 
         if ($mode === 'title' || $mode === 'both') {
-            $isCorrectTitle = $this->isGuessCorrect($guessTitle, (string)$track['title']) ? 1 : 0;
+            $isCorrectTitle = $this->isGuessCorrectAgainstVariants($guessTitle, $titleVariants) ? 1 : 0;
         }
         if ($mode === 'artist' || $mode === 'both') {
             $isCorrectArtist = $this->isGuessCorrect($guessArtist, (string)$track['artist']) ? 1 : 0;
@@ -653,9 +661,10 @@ class LobbyService
         }
 
         $trackStmt = $this->db->prepare(
-            'SELECT id, title, artist, youtube_url, youtube_video_id
-             FROM mq_tracks
-             WHERE id = :id
+            'SELECT t.id, t.title, t.artist, t.youtube_url, t.youtube_video_id, f.name AS family_name
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             WHERE t.id = :id
              LIMIT 1'
         );
         $trackStmt->execute(['id' => $round['track_id']]);
@@ -1103,6 +1112,80 @@ class LobbyService
         return $this->normalizeCategoryIds($decoded);
     }
 
+    private function getExpectedTitleVariants(int $familyId, string $familyName): array
+    {
+        $variants = [];
+        foreach ([$familyName, ...$this->listFamilyAliases($familyId)] as $value) {
+            $label = trim((string)$value);
+            if ($label === '') {
+                continue;
+            }
+
+            $normalized = $this->normalize($label);
+            if ($normalized === '' || isset($variants[$normalized])) {
+                continue;
+            }
+
+            $variants[$normalized] = $label;
+        }
+
+        return array_values($variants);
+    }
+
+    private function listFamilyAliases(int $familyId): array
+    {
+        if ($familyId <= 0 || !$this->hasFamilyAliasesTable()) {
+            return [];
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT alias
+             FROM mq_family_aliases
+             WHERE family_id = :family_id
+             ORDER BY alias ASC'
+        );
+        $stmt->execute(['family_id' => $familyId]);
+
+        return array_values(array_filter(array_map(
+            static fn(array $row): string => trim((string)($row['alias'] ?? '')),
+            $stmt->fetchAll()
+        ), static fn(string $value): bool => $value !== ''));
+    }
+
+    private function hasFamilyAliasesTable(): bool
+    {
+        if ($this->familyAliasesTableExists !== null) {
+            return $this->familyAliasesTableExists;
+        }
+
+        $stmt = $this->db->query(
+            "SELECT 1
+             FROM information_schema.tables
+             WHERE table_schema = DATABASE()
+               AND table_name = 'mq_family_aliases'
+             LIMIT 1"
+        );
+
+        $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
+        return $this->familyAliasesTableExists;
+    }
+
+    private function isGuessCorrectAgainstVariants(string $guess, array $expectedValues): bool
+    {
+        $normalizedGuess = $this->normalize($guess);
+        if ($normalizedGuess === '') {
+            return false;
+        }
+
+        foreach ($expectedValues as $expectedValue) {
+            if ($normalizedGuess === $this->normalize((string)$expectedValue)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function isGuessCorrect(string $guess, string $expected): bool
     {
         $g = $this->normalize($guess);
@@ -1112,7 +1195,8 @@ class LobbyService
 
     private function normalize(string $value): string
     {
-        $v = strtolower(trim($value));
+        $v = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+        $v = strtolower(trim((string)$v));
         $v = preg_replace('/\s+/', ' ', $v);
         $v = preg_replace('/[^a-z0-9 ]/i', '', $v);
         return trim($v ?? '');

@@ -172,7 +172,7 @@ try {
                 case 'updateFamily':
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
-                    $catalogController->updateFamily($body);
+                    $catalogController->updateFamily($userId, $body);
                     break;
                 case 'updateTrack':
                     $userId = AuthMiddleware::check();

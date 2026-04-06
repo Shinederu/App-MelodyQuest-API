@@ -5,6 +5,7 @@ require_once __DIR__ . '/DatabaseService.php';
 class CatalogService
 {
     private PDO $db;
+    private ?bool $familyAliasesTableExists = null;
 
     public function __construct()
     {
@@ -32,7 +33,7 @@ class CatalogService
                  ORDER BY f.name ASC'
             );
             $stmt->execute(['category_id' => $categoryId]);
-            return $stmt->fetchAll();
+            return $this->hydrateFamilyAliases($stmt->fetchAll());
         }
 
         $stmt = $this->db->query(
@@ -41,7 +42,7 @@ class CatalogService
              JOIN mq_categories c ON c.id = f.category_id
              ORDER BY c.name ASC, f.name ASC'
         );
-        return $stmt->fetchAll();
+        return $this->hydrateFamilyAliases($stmt->fetchAll());
     }
 
     public function listTracks(?int $familyId = null): array
@@ -104,20 +105,32 @@ class CatalogService
 
         $this->assertCategoryExists($categoryId);
 
-        $stmt = $this->db->prepare(
-            'INSERT INTO mq_families (category_id, name, slug, description, is_active, created_by)
-             VALUES (:category_id, :name, :slug, :description, :is_active, :created_by)'
-        );
-        $stmt->execute([
-            'category_id' => $categoryId,
-            'name' => $name,
-            'slug' => strtolower($slug),
-            'description' => isset($payload['description']) ? (string)$payload['description'] : null,
-            'is_active' => isset($payload['is_active']) ? (int)((bool)$payload['is_active']) : 1,
-            'created_by' => $userId,
-        ]);
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare(
+                'INSERT INTO mq_families (category_id, name, slug, description, is_active, created_by)
+                 VALUES (:category_id, :name, :slug, :description, :is_active, :created_by)'
+            );
+            $stmt->execute([
+                'category_id' => $categoryId,
+                'name' => $name,
+                'slug' => strtolower($slug),
+                'description' => isset($payload['description']) ? (string)$payload['description'] : null,
+                'is_active' => isset($payload['is_active']) ? (int)((bool)$payload['is_active']) : 1,
+                'created_by' => $userId,
+            ]);
 
-        return ['id' => (int)$this->db->lastInsertId()];
+            $familyId = (int)$this->db->lastInsertId();
+            $this->syncFamilyAliases($userId, $familyId, $name, $payload['aliases'] ?? []);
+
+            $this->db->commit();
+            return ['id' => $familyId];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
     }
 
     public function createTrack(int $userId, array $payload): array
@@ -193,15 +206,18 @@ class CatalogService
         return ['id' => $id, 'updated' => $stmt->rowCount()];
     }
 
-    public function updateFamily(array $payload): array
+    public function updateFamily(int $userId, array $payload): array
     {
         $id = (int)($payload['id'] ?? 0);
         if ($id <= 0) {
             throw new RuntimeException('id famille requis');
         }
 
+        $existing = $this->requireFamilyRecord($id);
+
         $sets = [];
         $params = ['id' => $id];
+        $familyName = (string)$existing['name'];
 
         if (array_key_exists('category_id', $payload)) {
             $categoryId = (int)$payload['category_id'];
@@ -217,6 +233,7 @@ class CatalogService
             if ($name === '') {
                 throw new RuntimeException('name invalide');
             }
+            $familyName = $name;
             $sets[] = 'name = :name';
             $params['name'] = $name;
         }
@@ -237,15 +254,33 @@ class CatalogService
             $params['is_active'] = (int)((bool)$payload['is_active']);
         }
 
-        if (empty($sets)) {
+        if (empty($sets) && !array_key_exists('aliases', $payload)) {
             throw new RuntimeException('Aucun champ a modifier');
         }
 
-        $sql = 'UPDATE mq_families SET ' . implode(', ', $sets) . ' WHERE id = :id';
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
+        $updated = 0;
 
-        return ['id' => $id, 'updated' => $stmt->rowCount()];
+        $this->db->beginTransaction();
+        try {
+            if (!empty($sets)) {
+                $sql = 'UPDATE mq_families SET ' . implode(', ', $sets) . ' WHERE id = :id';
+                $stmt = $this->db->prepare($sql);
+                $stmt->execute($params);
+                $updated = $stmt->rowCount();
+            }
+
+            if (array_key_exists('aliases', $payload)) {
+                $this->syncFamilyAliases($userId, $id, $familyName, $payload['aliases']);
+            }
+
+            $this->db->commit();
+            return ['id' => $id, 'updated' => $updated];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
     }
 
     public function updateTrack(int $userId, array $payload): array
@@ -430,6 +465,220 @@ class CatalogService
         return (int)$row['id'];
     }
 
+    private function requireFamilyRecord(int $familyId): array
+    {
+        $stmt = $this->db->prepare('SELECT id, category_id, name, slug FROM mq_families WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $familyId]);
+        $row = $stmt->fetch();
+
+        if (!$row) {
+            throw new RuntimeException('id famille requis');
+        }
+
+        return $row;
+    }
+
+    private function hydrateFamilyAliases(array $families): array
+    {
+        if (empty($families)) {
+            return [];
+        }
+
+        foreach ($families as &$family) {
+            $family['aliases'] = [];
+            $family['alias_count'] = 0;
+        }
+        unset($family);
+
+        if (!$this->hasFamilyAliasesTable()) {
+            return $families;
+        }
+
+        $familyIds = array_values(array_filter(array_map(
+            static fn(array $family): int => (int)($family['id'] ?? 0),
+            $families
+        )));
+        if (empty($familyIds)) {
+            return $families;
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($familyIds as $index => $familyId) {
+            $key = 'family_' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $familyId;
+        }
+
+        $sql = 'SELECT family_id, alias
+                FROM mq_family_aliases
+                WHERE family_id IN (' . implode(', ', $placeholders) . ')
+                ORDER BY alias ASC';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+
+        $aliasesByFamily = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $familyId = (int)($row['family_id'] ?? 0);
+            $alias = trim((string)($row['alias'] ?? ''));
+            if ($familyId <= 0 || $alias === '') {
+                continue;
+            }
+            $aliasesByFamily[$familyId][] = $alias;
+        }
+
+        foreach ($families as &$family) {
+            $familyId = (int)($family['id'] ?? 0);
+            $aliases = $aliasesByFamily[$familyId] ?? [];
+            $family['aliases'] = $aliases;
+            $family['alias_count'] = count($aliases);
+        }
+        unset($family);
+
+        return $families;
+    }
+
+    private function syncFamilyAliases(int $userId, int $familyId, string $familyName, $rawAliases): void
+    {
+        $aliases = $this->normalizeAliasMap($familyName, $rawAliases);
+
+        if (!$this->hasFamilyAliasesTable()) {
+            if (!empty($aliases)) {
+                throw new RuntimeException('La migration SQL des alias doit etre appliquee avant de sauvegarder des alias');
+            }
+            return;
+        }
+
+        $existingStmt = $this->db->prepare(
+            'SELECT id, alias, slug
+             FROM mq_family_aliases
+             WHERE family_id = :family_id'
+        );
+        $existingStmt->execute(['family_id' => $familyId]);
+
+        $existingBySlug = [];
+        foreach ($existingStmt->fetchAll() as $row) {
+            $slug = (string)($row['slug'] ?? '');
+            if ($slug !== '') {
+                $existingBySlug[$slug] = $row;
+            }
+        }
+
+        $staleIds = [];
+        foreach ($existingBySlug as $slug => $row) {
+            if (!array_key_exists($slug, $aliases)) {
+                $staleIds[] = (int)$row['id'];
+            }
+        }
+
+        if (!empty($staleIds)) {
+            $placeholders = [];
+            $params = [];
+            foreach ($staleIds as $index => $id) {
+                $key = 'id_' . $index;
+                $placeholders[] = ':' . $key;
+                $params[$key] = $id;
+            }
+
+            $delete = $this->db->prepare(
+                'DELETE FROM mq_family_aliases
+                 WHERE id IN (' . implode(', ', $placeholders) . ')'
+            );
+            $delete->execute($params);
+        }
+
+        foreach ($aliases as $slug => $alias) {
+            $existing = $existingBySlug[$slug] ?? null;
+            if ($existing) {
+                if ((string)$existing['alias'] !== $alias) {
+                    $update = $this->db->prepare(
+                        'UPDATE mq_family_aliases
+                         SET alias = :alias
+                         WHERE id = :id'
+                    );
+                    $update->execute([
+                        'alias' => $alias,
+                        'id' => (int)$existing['id'],
+                    ]);
+                }
+                continue;
+            }
+
+            $insert = $this->db->prepare(
+                'INSERT INTO mq_family_aliases (family_id, alias, slug, created_by)
+                 VALUES (:family_id, :alias, :slug, :created_by)'
+            );
+            $insert->execute([
+                'family_id' => $familyId,
+                'alias' => $alias,
+                'slug' => $slug,
+                'created_by' => $userId,
+            ]);
+        }
+    }
+
+    private function normalizeAliasMap(string $familyName, $rawAliases): array
+    {
+        $familyNormalized = $this->normalizeForCompare($familyName);
+        $aliases = [];
+
+        foreach ($this->extractAliasValues($rawAliases) as $value) {
+            $alias = trim($value);
+            $slug = $this->slugify($alias);
+            if ($alias === '' || $slug === '') {
+                continue;
+            }
+
+            if ($this->normalizeForCompare($alias) === $familyNormalized) {
+                continue;
+            }
+
+            if (!array_key_exists($slug, $aliases)) {
+                $aliases[$slug] = $alias;
+            }
+        }
+
+        return $aliases;
+    }
+
+    private function extractAliasValues($rawAliases): array
+    {
+        if (is_array($rawAliases)) {
+            return array_values(array_filter(array_map(
+                static fn($value): string => trim((string)$value),
+                $rawAliases
+            ), static fn(string $value): bool => $value !== ''));
+        }
+
+        if (is_string($rawAliases)) {
+            $parts = preg_split('/[\r\n,;]+/', $rawAliases) ?: [];
+            return array_values(array_filter(array_map(
+                static fn(string $value): string => trim($value),
+                $parts
+            ), static fn(string $value): bool => $value !== ''));
+        }
+
+        return [];
+    }
+
+    private function hasFamilyAliasesTable(): bool
+    {
+        if ($this->familyAliasesTableExists !== null) {
+            return $this->familyAliasesTableExists;
+        }
+
+        $stmt = $this->db->query(
+            "SELECT 1
+             FROM information_schema.tables
+             WHERE table_schema = DATABASE()
+               AND table_name = 'mq_family_aliases'
+             LIMIT 1"
+        );
+
+        $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
+        return $this->familyAliasesTableExists;
+    }
+
     private function assertCategoryExists(int $categoryId): void
     {
         $stmt = $this->db->prepare('SELECT id FROM mq_categories WHERE id = :id LIMIT 1');
@@ -439,6 +688,15 @@ class CatalogService
         if (!$row || empty($row['id'])) {
             throw new RuntimeException('category_id invalide');
         }
+    }
+
+    private function normalizeForCompare(string $value): string
+    {
+        $value = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+        $value = strtolower(trim((string)$value));
+        $value = preg_replace('/\s+/', ' ', $value) ?? '';
+        $value = preg_replace('/[^a-z0-9 ]/', '', $value) ?? '';
+        return trim($value);
     }
 
     private function slugify(string $value): string
