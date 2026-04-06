@@ -59,9 +59,9 @@ class CatalogController
         json_success('Famille mise a jour', $result);
     }
 
-    public function updateTrack(array $payload): void
+    public function updateTrack(int $userId, array $payload): void
     {
-        $result = $this->service->updateTrack($payload);
+        $result = $this->service->updateTrack($userId, $payload);
         json_success('Musique mise a jour', $result);
     }
 

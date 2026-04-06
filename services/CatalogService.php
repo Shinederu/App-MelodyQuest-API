@@ -48,9 +48,11 @@ class CatalogService
     {
         if ($familyId) {
             $stmt = $this->db->prepare(
-                'SELECT t.id, t.family_id, f.name AS family_name, t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds, t.is_active
+                'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
+                        t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds, t.is_active
                  FROM mq_tracks t
                  JOIN mq_families f ON f.id = t.family_id
+                 JOIN mq_categories c ON c.id = f.category_id
                  WHERE t.family_id = :family_id
                  ORDER BY t.title ASC'
             );
@@ -59,10 +61,12 @@ class CatalogService
         }
 
         $stmt = $this->db->query(
-            'SELECT t.id, t.family_id, f.name AS family_name, t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds, t.is_active
+            'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
+                    t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds, t.is_active
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
-             ORDER BY f.name ASC, t.title ASC'
+             JOIN mq_categories c ON c.id = f.category_id
+             ORDER BY c.name ASC, f.name ASC, t.title ASC'
         );
         return $stmt->fetchAll();
     }
@@ -98,6 +102,8 @@ class CatalogService
             throw new RuntimeException('category_id, name, slug requis');
         }
 
+        $this->assertCategoryExists($categoryId);
+
         $stmt = $this->db->prepare(
             'INSERT INTO mq_families (category_id, name, slug, description, is_active, created_by)
              VALUES (:category_id, :name, :slug, :description, :is_active, :created_by)'
@@ -116,11 +122,11 @@ class CatalogService
 
     public function createTrack(int $userId, array $payload): array
     {
-        $familyId = (int)($payload['family_id'] ?? 0);
+        $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
         $title = trim((string)($payload['title'] ?? ''));
         $youtubeUrl = trim((string)($payload['youtube_url'] ?? ''));
-        if ($familyId <= 0 || $title === '' || $youtubeUrl === '') {
-            throw new RuntimeException('family_id, title, youtube_url requis');
+        if ($title === '' || $youtubeUrl === '') {
+            throw new RuntimeException('title et youtube_url requis');
         }
 
         $stmt = $this->db->prepare(
@@ -202,6 +208,7 @@ class CatalogService
             if ($categoryId <= 0) {
                 throw new RuntimeException('category_id invalide');
             }
+            $this->assertCategoryExists($categoryId);
             $sets[] = 'category_id = :category_id';
             $params['category_id'] = $categoryId;
         }
@@ -241,7 +248,7 @@ class CatalogService
         return ['id' => $id, 'updated' => $stmt->rowCount()];
     }
 
-    public function updateTrack(array $payload): array
+    public function updateTrack(int $userId, array $payload): array
     {
         $id = (int)($payload['id'] ?? 0);
         if ($id <= 0) {
@@ -251,14 +258,16 @@ class CatalogService
         $sets = [];
         $params = ['id' => $id];
 
-        if (array_key_exists('family_id', $payload)) {
-            $familyId = (int)$payload['family_id'];
-            if ($familyId <= 0) {
-                throw new RuntimeException('family_id invalide');
-            }
+        if (
+            array_key_exists('family_id', $payload)
+            || array_key_exists('category_id', $payload)
+            || array_key_exists('family_name', $payload)
+        ) {
+            $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
             $sets[] = 'family_id = :family_id';
             $params['family_id'] = $familyId;
         }
+
         if (array_key_exists('title', $payload)) {
             $title = trim((string)$payload['title']);
             if ($title === '') {
@@ -339,5 +348,104 @@ class CatalogService
         $stmt = $this->db->prepare('DELETE FROM mq_tracks WHERE id = :id');
         $stmt->execute(['id' => $id]);
         return ['id' => $id, 'deleted' => $stmt->rowCount()];
+    }
+
+    private function resolveTrackFamilyId(int $userId, array $payload, bool $required): ?int
+    {
+        $familyId = (int)($payload['family_id'] ?? 0);
+        $categoryId = (int)($payload['category_id'] ?? 0);
+        $familyName = trim((string)($payload['family_name'] ?? ''));
+
+        if ($categoryId > 0 || $familyName !== '') {
+            if ($categoryId <= 0 || $familyName === '') {
+                throw new RuntimeException('category_id et family_name requis');
+            }
+
+            return $this->findOrCreateFamily($userId, $categoryId, $familyName);
+        }
+
+        if ($familyId > 0) {
+            return $this->requireFamilyId($familyId);
+        }
+
+        if ($required) {
+            throw new RuntimeException('family_id ou category_id + family_name requis');
+        }
+
+        return null;
+    }
+
+    private function findOrCreateFamily(int $userId, int $categoryId, string $familyName): int
+    {
+        $normalizedName = trim($familyName);
+        $slug = $this->slugify($normalizedName);
+        if ($normalizedName === '' || $slug === '') {
+            throw new RuntimeException('family_name invalide');
+        }
+
+        $this->assertCategoryExists($categoryId);
+
+        $existing = $this->db->prepare(
+            'SELECT id
+             FROM mq_families
+             WHERE category_id = :category_id AND slug = :slug
+             LIMIT 1'
+        );
+        $existing->execute([
+            'category_id' => $categoryId,
+            'slug' => $slug,
+        ]);
+
+        $row = $existing->fetch();
+        if ($row && !empty($row['id'])) {
+            return (int)$row['id'];
+        }
+
+        $insert = $this->db->prepare(
+            'INSERT INTO mq_families (category_id, name, slug, description, is_active, created_by)
+             VALUES (:category_id, :name, :slug, :description, :is_active, :created_by)'
+        );
+        $insert->execute([
+            'category_id' => $categoryId,
+            'name' => $normalizedName,
+            'slug' => $slug,
+            'description' => null,
+            'is_active' => 1,
+            'created_by' => $userId,
+        ]);
+
+        return (int)$this->db->lastInsertId();
+    }
+
+    private function requireFamilyId(int $familyId): int
+    {
+        $stmt = $this->db->prepare('SELECT id FROM mq_families WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $familyId]);
+        $row = $stmt->fetch();
+
+        if (!$row || empty($row['id'])) {
+            throw new RuntimeException('family_id invalide');
+        }
+
+        return (int)$row['id'];
+    }
+
+    private function assertCategoryExists(int $categoryId): void
+    {
+        $stmt = $this->db->prepare('SELECT id FROM mq_categories WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $categoryId]);
+        $row = $stmt->fetch();
+
+        if (!$row || empty($row['id'])) {
+            throw new RuntimeException('category_id invalide');
+        }
+    }
+
+    private function slugify(string $value): string
+    {
+        $value = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+        $value = strtolower((string)$value);
+        $value = preg_replace('/[^a-z0-9]+/', '-', $value) ?? '';
+        return trim($value, '-');
     }
 }

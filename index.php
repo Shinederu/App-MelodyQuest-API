@@ -177,7 +177,7 @@ try {
                 case 'updateTrack':
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
-                    $catalogController->updateTrack($body);
+                    $catalogController->updateTrack($userId, $body);
                     break;
                 default:
                     json_error('Unknown action for PUT method', 404);

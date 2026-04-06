@@ -963,13 +963,19 @@ class LobbyService
         $lobby = $this->requireLobby($lobbyId);
         $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
         $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
+        $usedFamilyIds = $this->getPlayedFamilyIds($lobbyId);
 
-        $trackId = $this->pickEligibleTrack($selectedCategoryIds, $usedTrackIds);
+        $trackId = $this->pickEligibleTrack($selectedCategoryIds, $usedTrackIds, $usedFamilyIds);
         if ($trackId !== null) {
             return $trackId;
         }
 
-        $trackId = $this->pickEligibleTrack($selectedCategoryIds, []);
+        $trackId = $this->pickEligibleTrack($selectedCategoryIds, $usedTrackIds, []);
+        if ($trackId !== null) {
+            return $trackId;
+        }
+
+        $trackId = $this->pickEligibleTrack($selectedCategoryIds, [], []);
         if ($trackId !== null) {
             return $trackId;
         }
@@ -985,7 +991,20 @@ class LobbyService
         return array_map('intval', array_column($stmt->fetchAll(), 'track_id'));
     }
 
-    private function pickEligibleTrack(array $selectedCategoryIds, array $excludedTrackIds): ?int
+    private function getPlayedFamilyIds(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT DISTINCT t.family_id
+             FROM mq_rounds r
+             JOIN mq_tracks t ON t.id = r.track_id
+             WHERE r.lobby_id = :lobby_id'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return array_values(array_filter(array_map('intval', array_column($stmt->fetchAll(), 'family_id'))));
+    }
+
+    private function pickEligibleTrack(array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
     {
         $where = ['t.is_active = 1'];
         $params = [];
@@ -1008,6 +1027,16 @@ class LobbyService
                 $params[$key] = $trackId;
             }
             $where[] = 't.id NOT IN (' . implode(', ', $trackPlaceholders) . ')';
+        }
+
+        if (!empty($excludedFamilyIds)) {
+            $familyPlaceholders = [];
+            foreach ($excludedFamilyIds as $index => $familyId) {
+                $key = 'family_' . $index;
+                $familyPlaceholders[] = ':' . $key;
+                $params[$key] = $familyId;
+            }
+            $where[] = 't.family_id NOT IN (' . implode(', ', $familyPlaceholders) . ')';
         }
 
         $sql = 'SELECT t.id
