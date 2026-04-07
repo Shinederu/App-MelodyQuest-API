@@ -2,11 +2,13 @@
 
 require_once __DIR__ . '/DatabaseService.php';
 require_once __DIR__ . '/../config/config.php';
+require_once __DIR__ . '/../utils/youtube.php';
 
 class LobbyService
 {
     private PDO $db;
     private ?bool $familyAliasesTableExists = null;
+    private ?bool $youtubeUrlColumnExists = null;
 
     public function __construct()
     {
@@ -321,8 +323,9 @@ class LobbyService
         $this->requireLobby($lobbyId);
         $this->requireLobbyMember($lobbyId, $userId);
 
+        $mediaSelect = $this->buildTrackMediaSelect('t');
         $stmt = $this->db->prepare(
-            'SELECT p.track_id, t.title, t.artist, t.youtube_url, t.youtube_video_id, t.family_id
+            'SELECT p.track_id, t.title, t.artist, ' . $mediaSelect . ', t.family_id
              FROM mq_lobby_track_pool p
              JOIN mq_tracks t ON t.id = p.track_id AND t.is_active = 1 AND t.is_validated = 1
              WHERE p.lobby_id = :lobby_id
@@ -330,7 +333,7 @@ class LobbyService
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
 
-        return ['items' => $stmt->fetchAll()];
+        return ['items' => $this->hydrateTrackRows($stmt->fetchAll())];
     }
 
     public function startRound(int $userId, int $lobbyId, array $payload = []): array
@@ -661,8 +664,9 @@ class LobbyService
             return ['round' => null, 'answers' => []];
         }
 
+        $mediaSelect = $this->buildTrackMediaSelect('t');
         $trackStmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, t.youtube_url, t.youtube_video_id, f.name AS family_name
+            'SELECT t.id, t.title, t.artist, ' . $mediaSelect . ', f.name AS family_name
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              WHERE t.id = :id
@@ -670,6 +674,7 @@ class LobbyService
         );
         $trackStmt->execute(['id' => $round['track_id']]);
         $track = $trackStmt->fetch();
+        $track = $track ? $this->hydrateTrackRow($track) : null;
 
         $answersStmt = $this->db->prepare(
             'SELECT a.user_id, u.username, a.guess_title, a.guess_artist, a.is_correct_title, a.is_correct_artist, a.score_awarded, a.answered_at
@@ -1169,6 +1174,52 @@ class LobbyService
 
         $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
         return $this->familyAliasesTableExists;
+    }
+
+    private function buildTrackMediaSelect(string $alias): string
+    {
+        if ($this->hasYoutubeUrlColumn()) {
+            return $alias . '.youtube_video_id, ' . $alias . '.youtube_url';
+        }
+
+        return $alias . '.youtube_video_id, NULL AS youtube_url';
+    }
+
+    private function hydrateTrackRows(array $rows): array
+    {
+        return array_map(fn(array $row): array => $this->hydrateTrackRow($row), $rows);
+    }
+
+    private function hydrateTrackRow(array $row): array
+    {
+        $videoId = mq_normalize_youtube_video_id((string)($row['youtube_video_id'] ?? ''));
+        if ($videoId === '' && $this->hasYoutubeUrlColumn()) {
+            $videoId = mq_normalize_youtube_video_id((string)($row['youtube_url'] ?? ''));
+        }
+
+        $row['youtube_video_id'] = $videoId;
+        $row['youtube_url'] = mq_build_youtube_watch_url($videoId);
+
+        return $row;
+    }
+
+    private function hasYoutubeUrlColumn(): bool
+    {
+        if ($this->youtubeUrlColumnExists !== null) {
+            return $this->youtubeUrlColumnExists;
+        }
+
+        $stmt = $this->db->query(
+            "SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = 'mq_tracks'
+               AND column_name = 'youtube_url'
+             LIMIT 1"
+        );
+
+        $this->youtubeUrlColumnExists = (bool)$stmt->fetchColumn();
+        return $this->youtubeUrlColumnExists;
     }
 
     private function isGuessCorrectAgainstVariants(string $guess, array $expectedValues): bool

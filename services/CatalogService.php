@@ -1,11 +1,13 @@
 <?php
 
 require_once __DIR__ . '/DatabaseService.php';
+require_once __DIR__ . '/../utils/youtube.php';
 
 class CatalogService
 {
     private PDO $db;
     private ?bool $familyAliasesTableExists = null;
+    private ?bool $youtubeUrlColumnExists = null;
 
     public function __construct()
     {
@@ -47,10 +49,12 @@ class CatalogService
 
     public function listTracks(?int $familyId = null): array
     {
+        $mediaSelect = $this->buildTrackMediaSelect('t');
+
         if ($familyId) {
             $stmt = $this->db->prepare(
                 'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                        t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds,
+                        t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds,
                         t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
                  FROM mq_tracks t
                  JOIN mq_families f ON f.id = t.family_id
@@ -59,26 +63,28 @@ class CatalogService
                  ORDER BY t.title ASC'
             );
             $stmt->execute(['family_id' => $familyId]);
-            return $stmt->fetchAll();
+            return $this->hydrateTrackRows($stmt->fetchAll());
         }
 
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds,
+                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds,
                     t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              JOIN mq_categories c ON c.id = f.category_id
              ORDER BY c.name ASC, f.name ASC, t.title ASC'
         );
-        return $stmt->fetchAll();
+        return $this->hydrateTrackRows($stmt->fetchAll());
     }
 
     public function listPendingTracks(): array
     {
+        $mediaSelect = $this->buildTrackMediaSelect('t');
+
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, t.youtube_url, t.youtube_video_id, t.duration_seconds,
+                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds,
                     t.is_active, t.is_validated, t.created_at, t.updated_at,
                     creator.username AS created_by_username
              FROM mq_tracks t
@@ -88,7 +94,7 @@ class CatalogService
              WHERE t.is_validated = 0
              ORDER BY t.created_at ASC, t.id ASC'
         );
-        return $stmt->fetchAll();
+        return $this->hydrateTrackRows($stmt->fetchAll());
     }
 
     public function createCategory(int $userId, array $payload): array
@@ -156,23 +162,30 @@ class CatalogService
     {
         $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
         $title = trim((string)($payload['title'] ?? ''));
-        $youtubeUrl = trim((string)($payload['youtube_url'] ?? ''));
-        if ($title === '' || $youtubeUrl === '') {
-            throw new RuntimeException('title et youtube_url requis');
+        $youtubeVideoId = $this->resolveTrackVideoId($payload, true);
+        if ($title === '' || $youtubeVideoId === null) {
+            throw new RuntimeException('title et youtube_video_id requis');
         }
 
-        $stmt = $this->db->prepare(
-            'INSERT INTO mq_tracks
-             (family_id, title, artist, youtube_url, youtube_video_id, duration_seconds, start_offset_seconds, end_offset_seconds, is_active, is_validated, validated_by, validated_at, created_by)
-             VALUES
-             (:family_id, :title, :artist, :youtube_url, :youtube_video_id, :duration_seconds, :start_offset_seconds, :end_offset_seconds, :is_active, :is_validated, :validated_by, :validated_at, :created_by)'
-        );
-        $stmt->execute([
+        $fields = [
+            'family_id',
+            'title',
+            'artist',
+            'youtube_video_id',
+            'duration_seconds',
+            'start_offset_seconds',
+            'end_offset_seconds',
+            'is_active',
+            'is_validated',
+            'validated_by',
+            'validated_at',
+            'created_by',
+        ];
+        $params = [
             'family_id' => $familyId,
             'title' => $title,
             'artist' => isset($payload['artist']) ? trim((string)$payload['artist']) : null,
-            'youtube_url' => $youtubeUrl,
-            'youtube_video_id' => isset($payload['youtube_video_id']) ? trim((string)$payload['youtube_video_id']) : null,
+            'youtube_video_id' => $youtubeVideoId,
             'duration_seconds' => isset($payload['duration_seconds']) ? (int)$payload['duration_seconds'] : null,
             'start_offset_seconds' => isset($payload['start_offset_seconds']) ? (int)$payload['start_offset_seconds'] : 0,
             'end_offset_seconds' => isset($payload['end_offset_seconds']) ? (int)$payload['end_offset_seconds'] : null,
@@ -181,7 +194,21 @@ class CatalogService
             'validated_by' => null,
             'validated_at' => null,
             'created_by' => $userId,
-        ]);
+        ];
+
+        if ($this->hasYoutubeUrlColumn()) {
+            array_splice($fields, 3, 0, ['youtube_url']);
+            $params['youtube_url'] = mq_build_youtube_watch_url($youtubeVideoId);
+        }
+
+        $placeholders = array_map(static fn(string $field): string => ':' . $field, $fields);
+        $stmt = $this->db->prepare(
+            'INSERT INTO mq_tracks
+             (' . implode(', ', $fields) . ')
+             VALUES
+             (' . implode(', ', $placeholders) . ')'
+        );
+        $stmt->execute($params);
 
         return ['id' => (int)$this->db->lastInsertId()];
     }
@@ -339,17 +366,19 @@ class CatalogService
             $sets[] = 'artist = :artist';
             $params['artist'] = trim((string)$payload['artist']);
         }
-        if (array_key_exists('youtube_url', $payload)) {
-            $url = trim((string)$payload['youtube_url']);
-            if ($url === '') {
-                throw new RuntimeException('youtube_url invalide');
+        if (array_key_exists('youtube_url', $payload) || array_key_exists('youtube_video_id', $payload)) {
+            $videoId = $this->resolveTrackVideoId($payload, true);
+            if ($videoId === null) {
+                throw new RuntimeException('youtube_video_id invalide');
             }
-            $sets[] = 'youtube_url = :youtube_url';
-            $params['youtube_url'] = $url;
-        }
-        if (array_key_exists('youtube_video_id', $payload)) {
+
             $sets[] = 'youtube_video_id = :youtube_video_id';
-            $params['youtube_video_id'] = trim((string)$payload['youtube_video_id']);
+            $params['youtube_video_id'] = $videoId;
+
+            if ($this->hasYoutubeUrlColumn()) {
+                $sets[] = 'youtube_url = :youtube_url';
+                $params['youtube_url'] = mq_build_youtube_watch_url($videoId);
+            }
         }
         if (array_key_exists('duration_seconds', $payload)) {
             $sets[] = 'duration_seconds = :duration_seconds';
@@ -567,6 +596,51 @@ class CatalogService
         return $row;
     }
 
+    private function buildTrackMediaSelect(string $alias): string
+    {
+        if ($this->hasYoutubeUrlColumn()) {
+            return $alias . '.youtube_video_id, ' . $alias . '.youtube_url';
+        }
+
+        return $alias . '.youtube_video_id, NULL AS youtube_url';
+    }
+
+    private function hydrateTrackRows(array $rows): array
+    {
+        return array_map(fn(array $row): array => $this->hydrateTrackRow($row), $rows);
+    }
+
+    private function hydrateTrackRow(array $row): array
+    {
+        $videoId = mq_normalize_youtube_video_id((string)($row['youtube_video_id'] ?? ''));
+        if ($videoId === '' && $this->hasYoutubeUrlColumn()) {
+            $videoId = mq_normalize_youtube_video_id((string)($row['youtube_url'] ?? ''));
+        }
+
+        $row['youtube_video_id'] = $videoId;
+        $row['youtube_url'] = mq_build_youtube_watch_url($videoId);
+
+        return $row;
+    }
+
+    private function resolveTrackVideoId(array $payload, bool $required): ?string
+    {
+        $videoId = mq_normalize_youtube_video_id((string)($payload['youtube_video_id'] ?? ''));
+        if ($videoId === '') {
+            $videoId = mq_normalize_youtube_video_id((string)($payload['youtube_url'] ?? ''));
+        }
+
+        if ($videoId !== '') {
+            return $videoId;
+        }
+
+        if ($required) {
+            throw new RuntimeException('youtube_video_id ou youtube_url valide requis');
+        }
+
+        return null;
+    }
+
     private function hydrateFamilyAliases(array $families): array
     {
         if (empty($families)) {
@@ -766,6 +840,25 @@ class CatalogService
 
         $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
         return $this->familyAliasesTableExists;
+    }
+
+    private function hasYoutubeUrlColumn(): bool
+    {
+        if ($this->youtubeUrlColumnExists !== null) {
+            return $this->youtubeUrlColumnExists;
+        }
+
+        $stmt = $this->db->query(
+            "SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = 'mq_tracks'
+               AND column_name = 'youtube_url'
+             LIMIT 1"
+        );
+
+        $this->youtubeUrlColumnExists = (bool)$stmt->fetchColumn();
+        return $this->youtubeUrlColumnExists;
     }
 
     private function assertCategoryExists(int $categoryId): void

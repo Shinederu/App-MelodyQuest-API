@@ -10,7 +10,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Parametrage du lobby reserve au createur
 - Catalogue musical structure par categories et familles
 - Validation manuelle des nouvelles musiques avant usage en partie
-- Stockage des pistes via URL YouTube (aucun fichier audio en base)
+- Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
 - Administration musicale reservee aux admins (flag admin modifie manuellement en DB)
 
@@ -23,6 +23,7 @@ Migration:
 - `sql/001_melodyquest_core.sql`
 - `sql/003_melodyquest_family_aliases.sql`
 - `sql/004_melodyquest_track_validation.sql`
+- `sql/005_melodyquest_track_video_id_only.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 ## Actions API (index.php)
