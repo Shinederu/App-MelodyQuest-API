@@ -379,30 +379,7 @@ class LobbyService
 
         $this->db->beginTransaction();
         try {
-            $insert = $this->db->prepare(
-                'INSERT INTO mq_rounds (lobby_id, round_number, track_id, started_at, status)
-                 VALUES (:lobby_id, :round_number, :track_id, NOW(3), "running")'
-            );
-            $insert->execute([
-                'lobby_id' => $lobbyId,
-                'round_number' => $roundNumber,
-                'track_id' => $trackId,
-            ]);
-
-            $updateLobby = $this->db->prepare(
-                'UPDATE mq_lobbies
-                 SET status = "playing",
-                     current_track_id = :track_id,
-                     playback_state = "playing",
-                     playback_started_at = NOW(3),
-                     playback_offset_seconds = 0,
-                     sync_revision = sync_revision + 1
-                 WHERE id = :id'
-            );
-            $updateLobby->execute([
-                'track_id' => $trackId,
-                'id' => $lobbyId,
-            ]);
+            $this->createRunningRoundLocked($lobbyId, $trackId, $roundNumber);
 
             $this->db->commit();
         } catch (Throwable $e) {
@@ -487,6 +464,91 @@ class LobbyService
         ];
     }
 
+    public function voteNextRound(int $userId, int $lobbyId): array
+    {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
+        $this->db->beginTransaction();
+        try {
+            $lobby = $this->requireLobbyForUpdate($lobbyId);
+            $this->requireLobbyMember($lobbyId, $userId);
+
+            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
+            if (!$round) {
+                throw new RuntimeException('Aucune manche en cours');
+            }
+
+            if (!$this->isNextVoteWindowOpen($lobby, $round)) {
+                throw new RuntimeException('Le passage a la manche suivante n est pas encore disponible');
+            }
+
+            $this->db->prepare(
+                'UPDATE mq_lobby_players
+                 SET is_ready = 1
+                 WHERE lobby_id = :lobby_id AND user_id = :user_id'
+            )->execute([
+                'lobby_id' => $lobbyId,
+                'user_id' => $userId,
+            ]);
+
+            $playersCount = $this->countLobbyPlayers($lobbyId);
+            $requiredCount = max(1, (int)ceil($playersCount * 0.5));
+            $readyCount = $this->countReadyVotes($lobbyId);
+            $advanced = false;
+            $finishedGame = false;
+
+            if ($readyCount >= $requiredCount) {
+                $this->db->prepare(
+                    'UPDATE mq_rounds
+                     SET status = "finished",
+                         ended_at = COALESCE(ended_at, NOW(3))
+                     WHERE id = :id'
+                )->execute(['id' => $round['id']]);
+
+                $finishedRounds = $this->countFinishedRounds($lobbyId);
+                $totalRounds = max(1, (int)($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS));
+
+                $this->resetLobbyReadyVotes($lobbyId);
+
+                if ($finishedRounds >= $totalRounds) {
+                    $this->db->prepare(
+                        'UPDATE mq_lobbies
+                         SET playback_state = "stopped",
+                             current_track_id = NULL,
+                             status = "finished",
+                             playback_started_at = NULL,
+                             playback_offset_seconds = 0,
+                             sync_revision = sync_revision + 1
+                         WHERE id = :id'
+                    )->execute(['id' => $lobbyId]);
+                    $finishedGame = true;
+                } else {
+                    $nextRoundNumber = (int)$round['round_number'] + 1;
+                    $this->createRunningRoundLocked($lobbyId, $this->pickTrackForLobby($lobbyId), $nextRoundNumber);
+                }
+
+                $advanced = true;
+                $readyCount = 0;
+            }
+
+            $this->db->commit();
+
+            return [
+                'advanced' => $advanced,
+                'finished_game' => $finishedGame,
+                'ready_count' => $readyCount,
+                'required_count' => $requiredCount,
+                'players_count' => $playersCount,
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     public function submitAnswer(int $userId, int $lobbyId, array $payload): array
     {
         $this->touchLobbyMember($lobbyId, $userId);
@@ -498,6 +560,10 @@ class LobbyService
         $round = $this->getCurrentRoundRow($lobbyId);
         if (!$round) {
             throw new RuntimeException('Aucune manche en cours');
+        }
+
+        if (!$this->isRoundAnswerWindowOpen($lobby, $round)) {
+            throw new RuntimeException('Le temps de reponse est ecoule');
         }
 
         $trackStmt = $this->db->prepare(
@@ -528,8 +594,6 @@ class LobbyService
             $isCorrectArtist = $this->isGuessCorrect($guessArtist, (string)$track['artist']) ? 1 : 0;
         }
 
-        $scoreAwarded = $isCorrectTitle + $isCorrectArtist;
-
         $prevStmt = $this->db->prepare(
             'SELECT id, score_awarded
              FROM mq_round_answers
@@ -539,6 +603,18 @@ class LobbyService
         $prevStmt->execute(['round_id' => $round['id'], 'user_id' => $userId]);
         $prev = $prevStmt->fetch();
         $previousScore = $prev ? (int)$prev['score_awarded'] : 0;
+        if ($previousScore > 0) {
+            return [
+                'score_awarded' => $previousScore,
+                'is_correct' => true,
+                'is_correct_title' => (bool)$isCorrectTitle,
+                'is_correct_artist' => (bool)$isCorrectArtist,
+                'already_validated' => true,
+            ];
+        }
+
+        $isCorrect = ($isCorrectTitle + $isCorrectArtist) > 0;
+        $scoreAwarded = $isCorrect ? $this->calculateTimedScore($lobby, $round) : 0;
         $delta = $scoreAwarded - $previousScore;
 
         $this->db->beginTransaction();
@@ -588,6 +664,7 @@ class LobbyService
 
         return [
             'score_awarded' => $scoreAwarded,
+            'is_correct' => $isCorrect,
             'is_correct_title' => (bool)$isCorrectTitle,
             'is_correct_artist' => (bool)$isCorrectArtist,
         ];
@@ -899,6 +976,18 @@ class LobbyService
         return $lobby;
     }
 
+    private function requireLobbyForUpdate(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare('SELECT * FROM mq_lobbies WHERE id = :id LIMIT 1 FOR UPDATE');
+        $stmt->execute(['id' => $lobbyId]);
+        $lobby = $stmt->fetch();
+        if (!$lobby) {
+            throw new RuntimeException('Lobby introuvable');
+        }
+
+        return $lobby;
+    }
+
     private function requireOwner(array $lobby, int $userId): void
     {
         if ((int)$lobby['owner_user_id'] !== $userId) {
@@ -934,6 +1023,23 @@ class LobbyService
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
         $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    private function getCurrentRoundRowForUpdate(int $lobbyId): ?array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT *
+             FROM mq_rounds
+             WHERE lobby_id = :lobby_id
+               AND status IN ("running", "reveal")
+             ORDER BY round_number DESC
+             LIMIT 1
+             FOR UPDATE'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+        $row = $stmt->fetch();
+
         return $row ?: null;
     }
 
@@ -1040,6 +1146,145 @@ class LobbyService
         $stmt->execute(['lobby_id' => $lobbyId]);
 
         return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function countLobbyPlayers(int $lobbyId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) AS c
+             FROM mq_lobby_players
+             WHERE lobby_id = :lobby_id'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function countReadyVotes(int $lobbyId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) AS c
+             FROM mq_lobby_players
+             WHERE lobby_id = :lobby_id
+               AND is_ready = 1'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function resetLobbyReadyVotes(int $lobbyId): void
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET is_ready = 0
+             WHERE lobby_id = :lobby_id'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+    }
+
+    private function createRunningRoundLocked(int $lobbyId, int $trackId, int $roundNumber): void
+    {
+        $insert = $this->db->prepare(
+            'INSERT INTO mq_rounds (lobby_id, round_number, track_id, started_at, status)
+             VALUES (:lobby_id, :round_number, :track_id, NOW(3), "running")'
+        );
+        $insert->execute([
+            'lobby_id' => $lobbyId,
+            'round_number' => $roundNumber,
+            'track_id' => $trackId,
+        ]);
+
+        $updateLobby = $this->db->prepare(
+            'UPDATE mq_lobbies
+             SET status = "playing",
+                 current_track_id = :track_id,
+                 playback_state = "playing",
+                 playback_started_at = NOW(3),
+                 playback_offset_seconds = 0,
+                 sync_revision = sync_revision + 1
+             WHERE id = :id'
+        );
+        $updateLobby->execute([
+            'track_id' => $trackId,
+            'id' => $lobbyId,
+        ]);
+
+        $this->resetLobbyReadyVotes($lobbyId);
+    }
+
+    private function isRoundAnswerWindowOpen(array $lobby, array $round): bool
+    {
+        $status = strtolower((string)($round['status'] ?? ''));
+        if ($status !== 'running') {
+            return false;
+        }
+
+        return microtime(true) < $this->getAnswerDeadlineTimestamp($lobby, $round);
+    }
+
+    private function isNextVoteWindowOpen(array $lobby, array $round): bool
+    {
+        return microtime(true) >= $this->getNextVoteAvailableTimestamp($lobby, $round);
+    }
+
+    private function calculateTimedScore(array $lobby, array $round): int
+    {
+        $startedAt = $this->parseSqlTimestampToUnix((string)($round['started_at'] ?? ''));
+        if ($startedAt <= 0) {
+            return MQ_MIN_CORRECT_ANSWER_SCORE;
+        }
+
+        $duration = max(1, (int)($lobby['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION));
+        $elapsed = max(0.0, microtime(true) - $startedAt);
+        if ($elapsed >= $duration) {
+            return 0;
+        }
+
+        if ($elapsed < 1) {
+            return MQ_MAX_CORRECT_ANSWER_SCORE;
+        }
+
+        $remainingRatio = max(0.0, 1 - ($elapsed / $duration));
+        $score = MQ_MIN_CORRECT_ANSWER_SCORE
+            + ((MQ_MAX_CORRECT_ANSWER_SCORE - MQ_MIN_CORRECT_ANSWER_SCORE) * ($remainingRatio ** 2));
+
+        return max(MQ_MIN_CORRECT_ANSWER_SCORE, min(MQ_MAX_CORRECT_ANSWER_SCORE, (int)round($score)));
+    }
+
+    private function getAnswerDeadlineTimestamp(array $lobby, array $round): float
+    {
+        return $this->parseSqlTimestampToUnix((string)($round['started_at'] ?? ''))
+            + max(1, (int)($lobby['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION));
+    }
+
+    private function getNextVoteAvailableTimestamp(array $lobby, array $round): float
+    {
+        return $this->getAnswerDeadlineTimestamp($lobby, $round) + $this->getRevealDelaySeconds($lobby);
+    }
+
+    private function getRevealDelaySeconds(array $lobby): int
+    {
+        return max(MQ_MIN_NEXT_VOTE_DELAY_SECONDS, (int)($lobby['reveal_duration_seconds'] ?? MQ_DEFAULT_REVEAL_DURATION));
+    }
+
+    private function parseSqlTimestampToUnix(string $value): float
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return 0.0;
+        }
+
+        $formats = ['Y-m-d H:i:s.u', 'Y-m-d H:i:s', DATE_ATOM];
+        foreach ($formats as $format) {
+            $parsed = DateTimeImmutable::createFromFormat($format, $value, new DateTimeZone(date_default_timezone_get()));
+            if ($parsed instanceof DateTimeImmutable) {
+                return (float)$parsed->format('U.u');
+            }
+        }
+
+        $timestamp = strtotime($value);
+        return $timestamp !== false ? (float)$timestamp : 0.0;
     }
 
     private function normalizeCategoryIds($raw): array
@@ -1173,6 +1418,7 @@ class LobbyService
 
     private function buildRoundStateSnapshot(int $lobbyId): array
     {
+        $lobby = $this->requireLobby($lobbyId);
         $round = $this->getCurrentRoundRow($lobbyId);
         if (!$round) {
             return ['round' => null, 'answers' => []];
@@ -1200,6 +1446,11 @@ class LobbyService
         $answersStmt->execute(['round_id' => $round['id']]);
         $answers = $answersStmt->fetchAll();
 
+        $answerDeadline = $this->getAnswerDeadlineTimestamp($lobby, $round);
+        $nextVoteAt = $this->getNextVoteAvailableTimestamp($lobby, $round);
+        $isAcceptingAnswers = $this->isRoundAnswerWindowOpen($lobby, $round);
+        $isRevealVisible = !$isAcceptingAnswers || strtolower((string)($round['status'] ?? '')) === 'reveal';
+
         return [
             'round' => [
                 'id' => (int)$round['id'],
@@ -1209,6 +1460,11 @@ class LobbyService
                 'started_at' => $round['started_at'],
                 'reveal_started_at' => $round['reveal_started_at'],
                 'ended_at' => $round['ended_at'],
+                'answer_deadline_at' => gmdate('c', (int)$answerDeadline),
+                'next_vote_available_at' => gmdate('c', (int)$nextVoteAt),
+                'reveal_delay_seconds' => $this->getRevealDelaySeconds($lobby),
+                'is_accepting_answers' => $isAcceptingAnswers,
+                'is_reveal_visible' => $isRevealVisible,
                 'track' => $track ?: null,
             ],
             'answers' => $answers,
