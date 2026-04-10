@@ -1,20 +1,25 @@
 <?php
 
 require_once __DIR__ . '/../services/LobbyService.php';
+require_once __DIR__ . '/../services/MercureService.php';
 require_once __DIR__ . '/../utils/response.php';
 
 class LobbyController
 {
     private LobbyService $service;
+    private MercureService $mercure;
 
     public function __construct()
     {
         $this->service = new LobbyService();
+        $this->mercure = new MercureService();
     }
 
     public function create(int $userId, array $payload): void
     {
         $data = $this->service->createLobby($userId, $payload);
+        $data = $this->attachLobbyRealtime($data);
+        $this->publishLobbySnapshot((int)($data['lobby']['id'] ?? 0), true);
         json_success('Lobby cree', $data, 201);
     }
 
@@ -26,6 +31,8 @@ class LobbyController
         }
 
         $data = $this->service->joinLobby($userId, $code);
+        $data = $this->attachLobbyRealtime($data);
+        $this->publishLobbySnapshot((int)($data['lobby']['id'] ?? 0), true);
         json_success('Lobby rejoint', $data);
     }
 
@@ -37,6 +44,7 @@ class LobbyController
         }
 
         $data = $this->service->leaveLobby($userId, $lobbyId);
+        $this->publishLobbySnapshot($lobbyId, true);
         json_success('Lobby quitte', $data);
     }
 
@@ -48,6 +56,7 @@ class LobbyController
         }
 
         $data = $this->service->touchLobbyPresence($userId, $lobbyId);
+        $this->refreshLobbyRealtimeAuthorization($lobbyId);
         json_success('Presence mise a jour', $data);
     }
 
@@ -60,6 +69,8 @@ class LobbyController
         }
 
         $data = $this->service->kickPlayer($userId, $lobbyId, $targetUserId);
+        $data = $this->attachLobbyRealtime($data);
+        $this->publishLobbySnapshot($lobbyId, true);
         json_success('Joueur exclu', $data);
     }
 
@@ -71,6 +82,7 @@ class LobbyController
         }
 
         $data = $this->service->deleteLobby($userId, $lobbyId);
+        $this->publishDeletedLobby((string)($data['lobby_code'] ?? ''), $lobbyId, true);
         json_success('Lobby supprime', $data);
     }
 
@@ -82,6 +94,7 @@ class LobbyController
         }
 
         $data = $this->service->getLobbyByCodeForUser($userId, $code);
+        $data = $this->attachLobbyRealtime($data);
         json_success(null, $data);
     }
 
@@ -93,6 +106,8 @@ class LobbyController
         }
 
         $data = $this->service->updateLobbyConfig($userId, $lobbyId, $payload);
+        $data = $this->attachLobbyRealtime($data);
+        $this->publishLobbySnapshot($lobbyId, true);
         json_success('Configuration lobby mise a jour', $data);
     }
 
@@ -104,6 +119,7 @@ class LobbyController
         }
 
         $data = $this->service->syncPlayback($userId, $lobbyId, $payload);
+        $this->publishLobbySnapshot($lobbyId, false);
         json_success('Etat de lecture synchronise', $data);
     }
 
@@ -127,6 +143,7 @@ class LobbyController
         }
 
         $data = $this->service->addTrackToPool($userId, $lobbyId, $trackId);
+        $this->publishLobbySnapshot($lobbyId, false);
         json_success('Track ajoute au pool', $data);
     }
 
@@ -139,6 +156,7 @@ class LobbyController
         }
 
         $data = $this->service->removeTrackFromPool($userId, $lobbyId, $trackId);
+        $this->publishLobbySnapshot($lobbyId, false);
         json_success('Track retire du pool', $data);
     }
 
@@ -161,6 +179,7 @@ class LobbyController
         }
 
         $data = $this->service->startRound($userId, $lobbyId, $payload);
+        $this->publishLobbySnapshot($lobbyId, true);
         json_success('Manche demarree', $data);
     }
 
@@ -172,6 +191,7 @@ class LobbyController
         }
 
         $data = $this->service->revealCurrentRound($userId, $lobbyId);
+        $this->publishLobbySnapshot($lobbyId, false);
         json_success('Manche en reveal', $data);
     }
 
@@ -183,6 +203,7 @@ class LobbyController
         }
 
         $data = $this->service->finishCurrentRound($userId, $lobbyId);
+        $this->publishLobbySnapshot($lobbyId, true);
         json_success('Manche terminee', $data);
     }
 
@@ -194,6 +215,7 @@ class LobbyController
         }
 
         $data = $this->service->submitAnswer($userId, $lobbyId, $payload);
+        $this->publishLobbySnapshot($lobbyId, false);
         json_success('Reponse enregistree', $data);
     }
 
@@ -222,6 +244,20 @@ class LobbyController
     public function listPublicLobbies(): void
     {
         $data = $this->service->listPublicLobbies();
+        if ($this->mercure->canPublish()) {
+            $data['realtime'] = [
+                'transport' => 'mercure',
+                'hub_url' => $this->mercure->getHubUrl(),
+                'topic' => $this->mercure->getPublicLobbiesTopic(),
+                'event' => 'lobbies',
+                'with_credentials' => false,
+            ];
+        } else {
+            $data['realtime'] = [
+                'transport' => 'sse',
+                'event' => 'lobbies',
+            ];
+        }
         json_success(null, $data);
     }
 
@@ -290,6 +326,131 @@ class LobbyController
         }
 
         exit;
+    }
+
+    private function attachLobbyRealtime(array $data): array
+    {
+        $lobbyCode = strtoupper(trim((string)($data['lobby']['lobby_code'] ?? '')));
+        if ($lobbyCode === '') {
+            return $data;
+        }
+
+        if ($this->mercure->canPublish() && $this->mercure->canAuthorizeSubscribers()) {
+            $this->mercure->authorizeLobbySubscription($lobbyCode);
+            $data['realtime'] = [
+                'transport' => 'mercure',
+                'hub_url' => $this->mercure->getHubUrl(),
+                'topic' => $this->mercure->getLobbyTopic($lobbyCode),
+                'event' => 'lobby',
+                'with_credentials' => true,
+            ];
+
+            return $data;
+        }
+
+        $data['realtime'] = [
+            'transport' => 'sse',
+            'event' => 'lobby',
+        ];
+
+        return $data;
+    }
+
+    private function refreshLobbyRealtimeAuthorization(int $lobbyId): void
+    {
+        if (!$this->mercure->canPublish() || !$this->mercure->canAuthorizeSubscribers()) {
+            return;
+        }
+
+        $lobbyCode = $this->service->getLobbyCodeById($lobbyId);
+        if ($lobbyCode === '') {
+            return;
+        }
+
+        $this->mercure->authorizeLobbySubscription($lobbyCode);
+    }
+
+    private function publishLobbySnapshot(int $lobbyId, bool $includePublicLobbies): void
+    {
+        if ($lobbyId <= 0 || !$this->mercure->canPublish()) {
+            return;
+        }
+
+        try {
+            $snapshot = $this->service->buildLobbyRealtimeSnapshot($lobbyId);
+            $lobbyCode = strtoupper(trim((string)($snapshot['lobby']['lobby_code'] ?? '')));
+            if ($lobbyCode !== '') {
+                $eventId = (string)($snapshot['revision'] ?? '');
+                $this->mercure->publish(
+                    $this->mercure->getLobbyTopic($lobbyCode),
+                    $snapshot,
+                    true,
+                    'lobby',
+                    $eventId
+                );
+            }
+        } catch (Throwable $e) {
+            error_log('MelodyQuest lobby snapshot publish failed: ' . $e->getMessage());
+        }
+
+        if ($includePublicLobbies) {
+            $this->publishPublicLobbiesSnapshot();
+        }
+    }
+
+    private function publishDeletedLobby(string $lobbyCode, int $lobbyId, bool $includePublicLobbies): void
+    {
+        if (!$this->mercure->canPublish()) {
+            return;
+        }
+
+        $lobbyCode = strtoupper(trim($lobbyCode));
+        if ($lobbyCode !== '') {
+            $payload = [
+                'revision' => 'deleted-' . $lobbyId . '-' . time(),
+                'lobby' => null,
+                'players' => [],
+                'pool' => ['items' => []],
+                'round' => ['round' => null, 'answers' => []],
+                'playback' => null,
+                'scoreboard' => ['items' => []],
+                'deleted' => true,
+                'deleted_lobby_id' => $lobbyId,
+                'server_time' => gmdate('c'),
+            ];
+
+            $this->mercure->publish(
+                $this->mercure->getLobbyTopic($lobbyCode),
+                $payload,
+                true,
+                'lobby',
+                (string)$payload['revision']
+            );
+        }
+
+        if ($includePublicLobbies) {
+            $this->publishPublicLobbiesSnapshot();
+        }
+    }
+
+    private function publishPublicLobbiesSnapshot(): void
+    {
+        if (!$this->mercure->canPublish()) {
+            return;
+        }
+
+        try {
+            $snapshot = $this->service->getPublicLobbiesRealtimeSnapshot();
+            $this->mercure->publish(
+                $this->mercure->getPublicLobbiesTopic(),
+                $snapshot,
+                false,
+                'lobbies',
+                (string)($snapshot['revision'] ?? '')
+            );
+        } catch (Throwable $e) {
+            error_log('MelodyQuest public lobbies publish failed: ' . $e->getMessage());
+        }
     }
 
     private function initSse(): void

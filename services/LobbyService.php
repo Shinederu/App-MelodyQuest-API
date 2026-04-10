@@ -155,7 +155,11 @@ class LobbyService
             }
         }
 
-        return ['ok' => true];
+        return [
+            'ok' => true,
+            'lobby_id' => $lobbyId,
+            'lobby_code' => (string)($lobby['lobby_code'] ?? ''),
+        ];
     }
 
     public function touchLobbyPresence(int $userId, int $lobbyId): array
@@ -203,7 +207,11 @@ class LobbyService
         $stmt = $this->db->prepare('DELETE FROM mq_lobbies WHERE id = :id');
         $stmt->execute(['id' => $lobbyId]);
 
-        return ['ok' => true, 'deleted_lobby_id' => $lobbyId];
+        return [
+            'ok' => true,
+            'deleted_lobby_id' => $lobbyId,
+            'lobby_code' => (string)($lobby['lobby_code'] ?? ''),
+        ];
     }
 
     public function updateLobbyConfig(int $userId, int $lobbyId, array $payload): array
@@ -323,17 +331,7 @@ class LobbyService
         $this->requireLobby($lobbyId);
         $this->requireLobbyMember($lobbyId, $userId);
 
-        $mediaSelect = $this->buildTrackMediaSelect('t');
-        $stmt = $this->db->prepare(
-            'SELECT p.track_id, t.title, t.artist, ' . $mediaSelect . ', t.family_id
-             FROM mq_lobby_track_pool p
-             JOIN mq_tracks t ON t.id = p.track_id AND t.is_active = 1 AND t.is_validated = 1
-             WHERE p.lobby_id = :lobby_id
-             ORDER BY p.added_at ASC'
-        );
-        $stmt->execute(['lobby_id' => $lobbyId]);
-
-        return ['items' => $this->hydrateTrackRows($stmt->fetchAll())];
+        return ['items' => $this->getTrackPoolSnapshotItems($lobbyId)];
     }
 
     public function startRound(int $userId, int $lobbyId, array $payload = []): array
@@ -659,46 +657,7 @@ class LobbyService
 
         $this->requireLobbyMember($lobbyId, $userId);
 
-        $round = $this->getCurrentRoundRow($lobbyId);
-        if (!$round) {
-            return ['round' => null, 'answers' => []];
-        }
-
-        $mediaSelect = $this->buildTrackMediaSelect('t');
-        $trackStmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, ' . $mediaSelect . ', f.name AS family_name
-             FROM mq_tracks t
-             JOIN mq_families f ON f.id = t.family_id
-             WHERE t.id = :id
-             LIMIT 1'
-        );
-        $trackStmt->execute(['id' => $round['track_id']]);
-        $track = $trackStmt->fetch();
-        $track = $track ? $this->hydrateTrackRow($track) : null;
-
-        $answersStmt = $this->db->prepare(
-            'SELECT a.user_id, u.username, a.guess_title, a.guess_artist, a.is_correct_title, a.is_correct_artist, a.score_awarded, a.answered_at
-             FROM mq_round_answers a
-             JOIN users u ON u.id = a.user_id
-             WHERE a.round_id = :round_id
-             ORDER BY a.answered_at ASC'
-        );
-        $answersStmt->execute(['round_id' => $round['id']]);
-        $answers = $answersStmt->fetchAll();
-
-        return [
-            'round' => [
-                'id' => (int)$round['id'],
-                'lobby_id' => (int)$round['lobby_id'],
-                'round_number' => (int)$round['round_number'],
-                'status' => $round['status'],
-                'started_at' => $round['started_at'],
-                'reveal_started_at' => $round['reveal_started_at'],
-                'ended_at' => $round['ended_at'],
-                'track' => $track ?: null,
-            ],
-            'answers' => $answers,
-        ];
+        return $this->buildRoundStateSnapshot($lobbyId);
     }
 
     public function getScoreboard(int $userId, int $lobbyId): array
@@ -708,15 +667,7 @@ class LobbyService
 
         $this->requireLobbyMember($lobbyId, $userId);
 
-        $stmt = $this->db->prepare(
-            'SELECT lp.user_id, u.username, lp.role, lp.score
-             FROM mq_lobby_players lp
-             JOIN users u ON u.id = lp.user_id
-             WHERE lp.lobby_id = :lobby_id
-             ORDER BY lp.score DESC, lp.joined_at ASC'
-        );
-        $stmt->execute(['lobby_id' => $lobbyId]);
-        return ['items' => $stmt->fetchAll()];
+        return $this->buildScoreboardSnapshot($lobbyId);
     }
 
     public function getLobbyById(int $lobbyId): array
@@ -780,11 +731,30 @@ class LobbyService
 
         $this->requireLobbyMember($lobbyId, $userId);
 
+        return $this->buildLobbyRealtimeSnapshot($lobbyId);
+    }
+
+    public function getPublicLobbiesRealtimeSnapshot(): array
+    {
+        $this->cleanupStaleOwnerLobbies();
+        $data = $this->listPublicLobbies();
+
+        return [
+            'revision' => $this->computePublicLobbiesRevision(),
+            'items' => $data['items'] ?? [],
+            'server_time' => gmdate('c'),
+        ];
+    }
+
+    public function buildLobbyRealtimeSnapshot(int $lobbyId): array
+    {
+        $this->cleanupStaleOwnerLobbies();
+
         $detail = $this->getLobbyById($lobbyId);
-        $pool = $this->listTrackPool($userId, $lobbyId);
-        $round = $this->getRoundState($userId, $lobbyId);
+        $pool = ['items' => $this->getTrackPoolSnapshotItems($lobbyId)];
+        $round = $this->buildRoundStateSnapshot($lobbyId);
         $playback = $this->getPlaybackState($lobbyId);
-        $scoreboard = $this->getScoreboard($userId, $lobbyId);
+        $scoreboard = $this->buildScoreboardSnapshot($lobbyId);
 
         return [
             'revision' => $this->computeLobbyRevision($lobbyId),
@@ -798,16 +768,13 @@ class LobbyService
         ];
     }
 
-    public function getPublicLobbiesRealtimeSnapshot(): array
+    public function getLobbyCodeById(int $lobbyId): string
     {
-        $this->cleanupStaleOwnerLobbies();
-        $data = $this->listPublicLobbies();
+        $stmt = $this->db->prepare('SELECT lobby_code FROM mq_lobbies WHERE id = :id LIMIT 1');
+        $stmt->execute(['id' => $lobbyId]);
+        $row = $stmt->fetch();
 
-        return [
-            'revision' => $this->computePublicLobbiesRevision(),
-            'items' => $data['items'] ?? [],
-            'server_time' => gmdate('c'),
-        ];
+        return strtoupper(trim((string)($row['lobby_code'] ?? '')));
     }
     public function listPublicLobbies(): array
     {
@@ -1174,6 +1141,79 @@ class LobbyService
 
         $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
         return $this->familyAliasesTableExists;
+    }
+
+    private function getTrackPoolSnapshotItems(int $lobbyId): array
+    {
+        $mediaSelect = $this->buildTrackMediaSelect('t');
+        $stmt = $this->db->prepare(
+            'SELECT p.track_id, t.title, t.artist, ' . $mediaSelect . ', t.family_id
+             FROM mq_lobby_track_pool p
+             JOIN mq_tracks t ON t.id = p.track_id AND t.is_active = 1 AND t.is_validated = 1
+             WHERE p.lobby_id = :lobby_id
+             ORDER BY p.added_at ASC'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return $this->hydrateTrackRows($stmt->fetchAll());
+    }
+
+    private function buildRoundStateSnapshot(int $lobbyId): array
+    {
+        $round = $this->getCurrentRoundRow($lobbyId);
+        if (!$round) {
+            return ['round' => null, 'answers' => []];
+        }
+
+        $mediaSelect = $this->buildTrackMediaSelect('t');
+        $trackStmt = $this->db->prepare(
+            'SELECT t.id, t.title, t.artist, ' . $mediaSelect . ', f.name AS family_name
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             WHERE t.id = :id
+             LIMIT 1'
+        );
+        $trackStmt->execute(['id' => $round['track_id']]);
+        $track = $trackStmt->fetch();
+        $track = $track ? $this->hydrateTrackRow($track) : null;
+
+        $answersStmt = $this->db->prepare(
+            'SELECT a.user_id, u.username, a.guess_title, a.guess_artist, a.is_correct_title, a.is_correct_artist, a.score_awarded, a.answered_at
+             FROM mq_round_answers a
+             JOIN users u ON u.id = a.user_id
+             WHERE a.round_id = :round_id
+             ORDER BY a.answered_at ASC'
+        );
+        $answersStmt->execute(['round_id' => $round['id']]);
+        $answers = $answersStmt->fetchAll();
+
+        return [
+            'round' => [
+                'id' => (int)$round['id'],
+                'lobby_id' => (int)$round['lobby_id'],
+                'round_number' => (int)$round['round_number'],
+                'status' => $round['status'],
+                'started_at' => $round['started_at'],
+                'reveal_started_at' => $round['reveal_started_at'],
+                'ended_at' => $round['ended_at'],
+                'track' => $track ?: null,
+            ],
+            'answers' => $answers,
+        ];
+    }
+
+    private function buildScoreboardSnapshot(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT lp.user_id, u.username, lp.role, lp.score
+             FROM mq_lobby_players lp
+             JOIN users u ON u.id = lp.user_id
+             WHERE lp.lobby_id = :lobby_id
+             ORDER BY lp.score DESC, lp.joined_at ASC'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return ['items' => $stmt->fetchAll()];
     }
 
     private function buildTrackMediaSelect(string $alias): string

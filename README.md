@@ -56,8 +56,10 @@ Authentifie:
 - `GET action=listFamilies&category_id=...` (optionnel)
 - `GET action=listTracks&family_id=...` (optionnel)
 
-Flux temps reel (SSE):
+Flux temps reel:
 
+- priorite: hub Mercure `https://mercure.shinederu.ch/.well-known/mercure`
+- fallback de transition: endpoints SSE historiques
 - `GET action=streamLobby&lobby_id=...`
 - `GET action=streamPublicLobbies`
 
@@ -81,6 +83,21 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 
 - Utilise prioritairement `MQ_DB_*` si presents
 - Sinon fallback sur `DB_*`
+- Pour le temps reel Mercure, le runtime PHP doit aussi connaitre:
+  - `MERCURE_HUB_URL`
+  - `MERCURE_PUBLISH_URL` (optionnel, recommande en interne Docker)
+  - `MERCURE_PUBLISHER_JWT_KEY`
+  - `MERCURE_SUBSCRIBER_JWT_KEY`
+  - `MQ_MERCURE_TOPIC_BASE` (optionnel)
+
+## Mercure
+
+- Hub vise: `https://mercure.shinederu.ch/.well-known/mercure`
+- Publish interne recommande cote PHP: `http://mercure/.well-known/mercure`
+- Topic lobbies publics: `https://api.shinederu.ch/melodyquest/topics/public-lobbies`
+- Topic lobby prive: `https://api.shinederu.ch/melodyquest/topics/lobbies/{LOBBY_CODE}`
+- Les reponses `listPublicLobbies` et `getLobbyByCode` exposent un bloc `data.realtime`
+- Le frontend tente Mercure d'abord, puis retombe sur le SSE historique si la config hub/JWT n'est pas encore disponible
 
 ## Regle admin
 
