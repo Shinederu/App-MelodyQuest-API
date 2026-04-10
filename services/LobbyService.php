@@ -19,10 +19,7 @@ class LobbyService
     {
         $this->cleanupStaleOwnerLobbies();
 
-        $name = trim((string)($payload['name'] ?? 'Lobby'));
-        if ($name === '') {
-            $name = 'Lobby';
-        }
+        $name = $this->normalizeLobbyName($payload['name'] ?? 'Nouveau lobby');
 
         $maxPlayers = (int)($payload['max_players'] ?? MQ_DEFAULT_MAX_PLAYERS);
         $maxPlayers = max(2, min($maxPlayers, MQ_MAX_MAX_PLAYERS));
@@ -227,7 +224,7 @@ class LobbyService
 
         if (isset($payload['name'])) {
             $fields[] = 'name = :name';
-            $params['name'] = trim((string)$payload['name']) ?: 'Lobby';
+            $params['name'] = $this->normalizeLobbyName($payload['name']);
         }
         if (isset($payload['visibility'])) {
             $visibility = strtolower((string)$payload['visibility']);
@@ -1060,6 +1057,22 @@ class LobbyService
         }
 
         return array_values($ids);
+    }
+
+    private function normalizeLobbyName($raw, string $fallback = 'Nouveau lobby'): string
+    {
+        $name = preg_replace('/\s+/u', ' ', trim((string)$raw));
+        $name = trim((string)$name);
+
+        if ($name === '') {
+            return $fallback;
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($name, 0, 120);
+        }
+
+        return substr($name, 0, 120);
     }
 
     private function encodeCategoryIds(array $ids): ?string
