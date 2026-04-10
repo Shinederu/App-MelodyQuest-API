@@ -98,6 +98,19 @@ class LobbyController
         json_success(null, $data);
     }
 
+    public function resetForReplay(int $userId, array $payload): void
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        if ($lobbyId <= 0) {
+            json_error('lobby_id requis', 400);
+        }
+
+        $data = $this->service->resetLobbyForReplay($userId, $lobbyId);
+        $data = $this->attachLobbyRealtime($data);
+        $this->publishLobbySnapshot($lobbyId, true);
+        json_success('Lobby reinitialise', $data);
+    }
+
     public function updateConfig(int $userId, array $payload): void
     {
         $lobbyId = (int)($payload['lobby_id'] ?? 0);

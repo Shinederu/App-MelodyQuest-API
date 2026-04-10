@@ -115,6 +115,10 @@ try {
                     $userId = AuthMiddleware::check();
                     $lobbyController->delete($userId, $body);
                     break;
+                case 'resetLobbyForReplay':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->resetForReplay($userId, $body);
+                    break;
                 case 'syncPlayback':
                     $userId = AuthMiddleware::check();
                     $lobbyController->syncPlayback($userId, $body);

@@ -211,6 +211,73 @@ class LobbyService
         ];
     }
 
+    public function resetLobbyForReplay(int $userId, int $lobbyId): array
+    {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
+        $this->db->beginTransaction();
+        try {
+            $lobby = $this->requireLobbyForUpdate($lobbyId);
+            $this->requireLobbyMember($lobbyId, $userId);
+
+            $currentRound = $this->getCurrentRoundRowForUpdate($lobbyId);
+            if ($currentRound) {
+                throw new RuntimeException('Une manche est encore en cours');
+            }
+
+            $status = strtolower((string)($lobby['status'] ?? ''));
+            $finishedRounds = $this->countFinishedRounds($lobbyId);
+            if ($status !== 'finished') {
+                if ($status === 'waiting' && $finishedRounds === 0) {
+                    $this->db->commit();
+                    return $this->getLobbyById($lobbyId);
+                }
+
+                throw new RuntimeException('Le lobby n est pas dans un etat relancable');
+            }
+
+            $this->db->prepare(
+                'DELETE a
+                 FROM mq_round_answers a
+                 JOIN mq_rounds r ON r.id = a.round_id
+                 WHERE r.lobby_id = :lobby_id'
+            )->execute(['lobby_id' => $lobbyId]);
+
+            $this->db->prepare(
+                'DELETE FROM mq_rounds
+                 WHERE lobby_id = :lobby_id'
+            )->execute(['lobby_id' => $lobbyId]);
+
+            $this->db->prepare(
+                'UPDATE mq_lobby_players
+                 SET score = 0,
+                     is_ready = 0
+                 WHERE lobby_id = :lobby_id'
+            )->execute(['lobby_id' => $lobbyId]);
+
+            $this->db->prepare(
+                'UPDATE mq_lobbies
+                 SET status = "waiting",
+                     current_track_id = NULL,
+                     playback_state = "stopped",
+                     playback_started_at = NULL,
+                     playback_offset_seconds = 0,
+                     sync_revision = sync_revision + 1
+                 WHERE id = :id'
+            )->execute(['id' => $lobbyId]);
+
+            $this->db->commit();
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+
+        return $this->getLobbyById($lobbyId);
+    }
+
     public function updateLobbyConfig(int $userId, int $lobbyId, array $payload): array
     {
         $this->touchLobbyMember($lobbyId, $userId);
