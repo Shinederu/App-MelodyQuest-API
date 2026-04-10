@@ -24,11 +24,9 @@ class LobbyService
         $maxPlayers = (int)($payload['max_players'] ?? MQ_DEFAULT_MAX_PLAYERS);
         $maxPlayers = max(2, min($maxPlayers, MQ_MAX_MAX_PLAYERS));
 
-        $totalRounds = (int)($payload['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
-        $totalRounds = max(1, min($totalRounds, 50));
+        $totalRounds = $this->validateTotalRoundsValue($payload['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
 
-        $roundDuration = (int)($payload['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION);
-        $roundDuration = max(10, min($roundDuration, 300));
+        $roundDuration = $this->validateRoundDurationValue($payload['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION);
 
         $revealDuration = (int)($payload['reveal_duration_seconds'] ?? MQ_DEFAULT_REVEAL_DURATION);
         $revealDuration = max(3, min($revealDuration, 60));
@@ -43,7 +41,9 @@ class LobbyService
             $guessMode = 'both';
         }
 
-        $selectedCategoryIds = $this->normalizeCategoryIds($payload['selected_category_ids'] ?? []);
+        $selectedCategoryIds = array_key_exists('selected_category_ids', $payload)
+            ? $this->normalizeCategoryIds($payload['selected_category_ids'])
+            : $this->getDefaultSelectedCategoryIds();
 
         $code = $this->generateLobbyCode();
 
@@ -240,12 +240,12 @@ class LobbyService
             $params['max_players'] = $maxPlayers;
         }
         if (isset($payload['total_rounds'])) {
-            $totalRounds = max(1, min((int)$payload['total_rounds'], 50));
+            $totalRounds = $this->validateTotalRoundsValue($payload['total_rounds']);
             $fields[] = 'total_rounds = :total_rounds';
             $params['total_rounds'] = $totalRounds;
         }
         if (isset($payload['round_duration_seconds'])) {
-            $duration = max(10, min((int)$payload['round_duration_seconds'], 300));
+            $duration = $this->validateRoundDurationValue($payload['round_duration_seconds']);
             $fields[] = 'round_duration_seconds = :round_duration_seconds';
             $params['round_duration_seconds'] = $duration;
         }
@@ -338,6 +338,7 @@ class LobbyService
 
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $userId);
+        $launchConfig = $this->assertLobbyCanStart($lobby);
 
         $running = $this->getCurrentRoundRow($lobbyId);
         if ($running) {
@@ -345,7 +346,7 @@ class LobbyService
         }
 
         $finishedRounds = $this->countFinishedRounds($lobbyId);
-        $targetRounds = max(1, (int)($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS));
+        $targetRounds = $launchConfig['total_rounds'];
         if ($finishedRounds >= $targetRounds) {
             throw new RuntimeException('Toutes les manches de ce lobby ont deja ete jouees');
         }
@@ -452,7 +453,7 @@ class LobbyService
                  sync_revision = sync_revision + 1
              WHERE id = :id'
         )->execute([
-            'status' => $this->countFinishedRounds($lobbyId) >= max(1, (int)($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS))
+            'status' => $this->countFinishedRounds($lobbyId) >= $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS)
                 ? 'finished'
                 : 'waiting',
             'id' => $lobbyId,
@@ -507,7 +508,7 @@ class LobbyService
                 )->execute(['id' => $round['id']]);
 
                 $finishedRounds = $this->countFinishedRounds($lobbyId);
-                $totalRounds = max(1, (int)($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS));
+                $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
 
                 $this->resetLobbyReadyVotes($lobbyId);
 
@@ -1014,8 +1015,11 @@ class LobbyService
     private function getCurrentRoundRow(int $lobbyId): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT *
-             FROM mq_rounds
+            'SELECT r.*,
+                    COALESCE(UNIX_TIMESTAMP(r.started_at), 0) AS started_at_unix,
+                    COALESCE(UNIX_TIMESTAMP(r.reveal_started_at), 0) AS reveal_started_at_unix,
+                    COALESCE(UNIX_TIMESTAMP(r.ended_at), 0) AS ended_at_unix
+             FROM mq_rounds r
              WHERE lobby_id = :lobby_id
                AND status IN ("running", "reveal")
              ORDER BY round_number DESC
@@ -1029,8 +1033,11 @@ class LobbyService
     private function getCurrentRoundRowForUpdate(int $lobbyId): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT *
-             FROM mq_rounds
+            'SELECT r.*,
+                    COALESCE(UNIX_TIMESTAMP(r.started_at), 0) AS started_at_unix,
+                    COALESCE(UNIX_TIMESTAMP(r.reveal_started_at), 0) AS reveal_started_at_unix,
+                    COALESCE(UNIX_TIMESTAMP(r.ended_at), 0) AS ended_at_unix
+             FROM mq_rounds r
              WHERE lobby_id = :lobby_id
                AND status IN ("running", "reveal")
              ORDER BY round_number DESC
@@ -1047,6 +1054,10 @@ class LobbyService
     {
         $lobby = $this->requireLobby($lobbyId);
         $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
+        if (empty($selectedCategoryIds)) {
+            throw new RuntimeException('Selectionne au moins une categorie avant de lancer la partie');
+        }
+
         $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
         $usedFamilyIds = $this->getPlayedFamilyIds($lobbyId);
 
@@ -1230,7 +1241,7 @@ class LobbyService
 
     private function calculateTimedScore(array $lobby, array $round): int
     {
-        $startedAt = $this->parseSqlTimestampToUnix((string)($round['started_at'] ?? ''));
+        $startedAt = $this->resolveRoundTimestamp($round, 'started_at');
         if ($startedAt <= 0) {
             return MQ_MIN_CORRECT_ANSWER_SCORE;
         }
@@ -1254,7 +1265,7 @@ class LobbyService
 
     private function getAnswerDeadlineTimestamp(array $lobby, array $round): float
     {
-        return $this->parseSqlTimestampToUnix((string)($round['started_at'] ?? ''))
+        return $this->resolveRoundTimestamp($round, 'started_at')
             + max(1, (int)($lobby['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION));
     }
 
@@ -1285,6 +1296,123 @@ class LobbyService
 
         $timestamp = strtotime($value);
         return $timestamp !== false ? (float)$timestamp : 0.0;
+    }
+
+    private function resolveRoundTimestamp(array $round, string $baseField): float
+    {
+        $unixKey = $baseField . '_unix';
+        $unixValue = isset($round[$unixKey]) ? (float)$round[$unixKey] : 0.0;
+        if ($unixValue > 0) {
+            return $unixValue;
+        }
+
+        return $this->parseSqlTimestampToUnix((string)($round[$baseField] ?? ''));
+    }
+
+    private function validateTotalRoundsValue($raw): int
+    {
+        if (!is_numeric($raw)) {
+            throw new RuntimeException('Le nombre de manches doit etre un entier valide');
+        }
+
+        $value = (int)$raw;
+        if ($value < MQ_MIN_TOTAL_ROUNDS || $value > MQ_MAX_TOTAL_ROUNDS) {
+            throw new RuntimeException(
+                sprintf('Le nombre de manches doit etre compris entre %d et %d', MQ_MIN_TOTAL_ROUNDS, MQ_MAX_TOTAL_ROUNDS)
+            );
+        }
+
+        return $value;
+    }
+
+    private function validateRoundDurationValue($raw): int
+    {
+        if (!is_numeric($raw)) {
+            throw new RuntimeException('Le chrono doit etre un entier valide');
+        }
+
+        $value = (int)$raw;
+        if ($value < MQ_MIN_ROUND_DURATION || $value > MQ_MAX_ROUND_DURATION) {
+            throw new RuntimeException(
+                sprintf('Le chrono doit etre compris entre %d et %d secondes', MQ_MIN_ROUND_DURATION, MQ_MAX_ROUND_DURATION)
+            );
+        }
+
+        return $value;
+    }
+
+    private function assertLobbyCanStart(array $lobby): array
+    {
+        $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
+        $roundDuration = $this->validateRoundDurationValue($lobby['round_duration_seconds'] ?? MQ_DEFAULT_ROUND_DURATION);
+        $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
+
+        if (empty($selectedCategoryIds)) {
+            throw new RuntimeException('Selectionne au moins une categorie avant de lancer la partie');
+        }
+
+        $availableTracks = $this->countAvailableTracksForCategories($selectedCategoryIds);
+        if ($availableTracks <= 0) {
+            throw new RuntimeException('Aucune musique valide n est disponible dans les categories selectionnees');
+        }
+
+        if ($availableTracks < $totalRounds) {
+            throw new RuntimeException(
+                sprintf(
+                    'Pas assez de musiques disponibles: %d musique(s) valide(s) pour %d manche(s) ciblee(s)',
+                    $availableTracks,
+                    $totalRounds
+                )
+            );
+        }
+
+        return [
+            'total_rounds' => $totalRounds,
+            'round_duration_seconds' => $roundDuration,
+            'selected_category_ids' => $selectedCategoryIds,
+            'available_tracks' => $availableTracks,
+        ];
+    }
+
+    private function getDefaultSelectedCategoryIds(): array
+    {
+        $stmt = $this->db->query(
+            'SELECT id
+             FROM mq_categories
+             WHERE is_active = 1
+             ORDER BY name ASC'
+        );
+
+        return array_values(array_filter(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN))));
+    }
+
+    private function countAvailableTracksForCategories(array $categoryIds): int
+    {
+        $categoryIds = $this->normalizeCategoryIds($categoryIds);
+        if (empty($categoryIds)) {
+            return 0;
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($categoryIds as $index => $categoryId) {
+            $key = 'category_' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $categoryId;
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(DISTINCT t.id) AS c
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             WHERE f.category_id IN (' . implode(', ', $placeholders) . ')
+               AND f.is_active = 1
+               AND t.is_active = 1
+               AND t.is_validated = 1'
+        );
+        $stmt->execute($params);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
     }
 
     private function normalizeCategoryIds($raw): array
@@ -1452,16 +1580,22 @@ class LobbyService
         $isRevealVisible = !$isAcceptingAnswers || strtolower((string)($round['status'] ?? '')) === 'reveal';
 
         return [
+            'server_time_unix' => microtime(true),
             'round' => [
                 'id' => (int)$round['id'],
                 'lobby_id' => (int)$round['lobby_id'],
                 'round_number' => (int)$round['round_number'],
                 'status' => $round['status'],
                 'started_at' => $round['started_at'],
+                'started_at_unix' => $this->resolveRoundTimestamp($round, 'started_at'),
                 'reveal_started_at' => $round['reveal_started_at'],
+                'reveal_started_at_unix' => $this->resolveRoundTimestamp($round, 'reveal_started_at'),
                 'ended_at' => $round['ended_at'],
+                'ended_at_unix' => $this->resolveRoundTimestamp($round, 'ended_at'),
                 'answer_deadline_at' => gmdate('c', (int)$answerDeadline),
+                'answer_deadline_unix' => $answerDeadline,
                 'next_vote_available_at' => gmdate('c', (int)$nextVoteAt),
+                'next_vote_available_unix' => $nextVoteAt,
                 'reveal_delay_seconds' => $this->getRevealDelaySeconds($lobby),
                 'is_accepting_answers' => $isAcceptingAnswers,
                 'is_reveal_visible' => $isRevealVisible,

@@ -17,9 +17,23 @@ class CatalogService
     public function listCategories(): array
     {
         $stmt = $this->db->query(
-            'SELECT id, name, slug, is_active, created_at, updated_at
-             FROM mq_categories
-             ORDER BY name ASC'
+            'SELECT c.id,
+                    c.name,
+                    c.slug,
+                    c.is_active,
+                    c.created_at,
+                    c.updated_at,
+                    COUNT(DISTINCT CASE
+                        WHEN f.is_active = 1
+                         AND t.is_active = 1
+                         AND t.is_validated = 1
+                        THEN t.id
+                    END) AS track_count
+             FROM mq_categories c
+             LEFT JOIN mq_families f ON f.category_id = c.id
+             LEFT JOIN mq_tracks t ON t.family_id = f.id
+             GROUP BY c.id, c.name, c.slug, c.is_active, c.created_at, c.updated_at
+             ORDER BY c.name ASC'
         );
         return $stmt->fetchAll();
     }
