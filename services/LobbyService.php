@@ -1777,11 +1777,35 @@ class LobbyService
 
     private function normalize(string $value): string
     {
-        $v = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
-        $v = strtolower(trim((string)$v));
-        $v = preg_replace('/\s+/', ' ', $v);
-        $v = preg_replace('/[^a-z0-9 ]/i', '', $v);
-        return trim($v ?? '');
+        $v = trim($value);
+        if ($v === '') {
+            return '';
+        }
+
+        if (class_exists('Transliterator')) {
+            $transliterated = transliterator_transliterate(
+                'Any-Latin; Latin-ASCII; NFD; [:Nonspacing Mark:] Remove; NFC',
+                $v
+            );
+            if (is_string($transliterated) && $transliterated !== '') {
+                $v = $transliterated;
+            }
+        } else {
+            $iconvValue = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $v);
+            if ($iconvValue !== false && $iconvValue !== '') {
+                $v = $iconvValue;
+            }
+        }
+
+        if (function_exists('mb_strtolower')) {
+            $v = mb_strtolower($v, 'UTF-8');
+        } else {
+            $v = strtolower($v);
+        }
+
+        $v = preg_replace('/[^a-z0-9]+/i', '', $v);
+
+        return (string)($v ?? '');
     }
 
     private function generateLobbyCode(): string
