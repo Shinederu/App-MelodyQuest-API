@@ -103,11 +103,15 @@ class LobbyService
             throw new RuntimeException('Lobby ferme');
         }
 
-        $countStmt = $this->db->prepare('SELECT COUNT(*) AS c FROM mq_lobby_players WHERE lobby_id = :id');
-        $countStmt->execute(['id' => $lobby['id']]);
-        $count = (int)$countStmt->fetch()['c'];
-        if ($count >= (int)$lobby['max_players']) {
-            throw new RuntimeException('Lobby plein');
+        $lobbyId = (int)$lobby['id'];
+        $alreadyMember = $this->isLobbyMember($lobbyId, $userId);
+        if (!$alreadyMember) {
+            $countStmt = $this->db->prepare('SELECT COUNT(*) AS c FROM mq_lobby_players WHERE lobby_id = :id');
+            $countStmt->execute(['id' => $lobbyId]);
+            $count = (int)$countStmt->fetch()['c'];
+            if ($count >= (int)$lobby['max_players']) {
+                throw new RuntimeException('Lobby plein');
+            }
         }
 
         $upsert = $this->db->prepare(
@@ -116,11 +120,15 @@ class LobbyService
              ON DUPLICATE KEY UPDATE last_seen_at = NOW()'
         );
         $upsert->execute([
-            'lobby_id' => $lobby['id'],
+            'lobby_id' => $lobbyId,
             'user_id' => $userId,
         ]);
 
-        return $this->getLobbyById((int)$lobby['id']);
+        if (!$alreadyMember) {
+            $this->touchLobbyActivity($lobbyId);
+        }
+
+        return $this->getLobbyById($lobbyId);
     }
 
     public function leaveLobby(int $userId, int $lobbyId): array
@@ -151,6 +159,8 @@ class LobbyService
                 $close->execute(['id' => $lobbyId]);
             }
         }
+
+        $this->touchLobbyActivity($lobbyId);
 
         return [
             'ok' => true,
@@ -189,6 +199,8 @@ class LobbyService
             'lobby_id' => $lobbyId,
             'user_id' => $targetUserId,
         ]);
+
+        $this->touchLobbyActivity($lobbyId);
 
         return $this->getLobbyById($lobbyId);
     }
@@ -939,6 +951,17 @@ class LobbyService
         ]);
     }
 
+    private function touchLobbyActivity(int $lobbyId): void
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobbies
+             SET sync_revision = sync_revision + 1,
+                 updated_at = NOW()
+             WHERE id = :id'
+        );
+        $stmt->execute(['id' => $lobbyId]);
+    }
+
     private function cleanupStaleOwnerLobbies(): void
     {
         $timeout = max(1, (int)MQ_OWNER_STALE_TIMEOUT_SECONDS);
@@ -1004,11 +1027,17 @@ class LobbyService
     {
         $stmt = $this->db->query(
             'SELECT COUNT(*) AS c,
-                    COALESCE(MAX(UNIX_TIMESTAMP(updated_at)), 0) AS max_updated,
-                    COALESCE(SUM(sync_revision), 0) AS sync_sum
-             FROM mq_lobbies
-             WHERE visibility = "public"
-               AND status IN ("waiting", "playing")'
+                    COALESCE(MAX(UNIX_TIMESTAMP(l.updated_at)), 0) AS max_updated,
+                    COALESCE(SUM(l.sync_revision), 0) AS sync_sum,
+                    COALESCE(SUM(p.players_count), 0) AS players_total
+             FROM mq_lobbies l
+             LEFT JOIN (
+                SELECT lobby_id, COUNT(*) AS players_count
+                FROM mq_lobby_players
+                GROUP BY lobby_id
+             ) p ON p.lobby_id = l.id
+             WHERE l.visibility = "public"
+               AND l.status IN ("waiting", "playing")'
         );
         $row = $stmt->fetch();
         if (!$row) {
@@ -1019,6 +1048,7 @@ class LobbyService
             (int)$row['c'],
             (int)$row['max_updated'],
             (int)$row['sync_sum'],
+            (int)$row['players_total'],
         ]);
 
         return abs((int)crc32($seed));
