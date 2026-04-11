@@ -866,16 +866,6 @@ class LobbyService
         return $this->getLobbyById($lobbyId);
     }
 
-    public function getLobbyRealtimeSnapshot(int $userId, int $lobbyId): array
-    {
-        $this->touchLobbyMember($lobbyId, $userId);
-        $this->cleanupStaleOwnerLobbies();
-
-        $this->requireLobbyMember($lobbyId, $userId);
-
-        return $this->buildLobbyRealtimeSnapshot($lobbyId);
-    }
-
     public function getPublicLobbiesRealtimeSnapshot(): array
     {
         $this->cleanupStaleOwnerLobbies();

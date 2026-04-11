@@ -278,79 +278,9 @@ class LobbyController
                 'with_credentials' => false,
             ];
         } else {
-            $data['realtime'] = [
-                'transport' => 'sse',
-                'event' => 'lobbies',
-            ];
+            $data['realtime'] = null;
         }
         json_success(null, $data);
-    }
-
-    public function streamLobby(int $userId, array $payload): void
-    {
-        $lobbyId = (int)($payload['lobby_id'] ?? ($_GET['lobby_id'] ?? 0));
-        if ($lobbyId <= 0) {
-            json_error('lobby_id requis', 400);
-        }
-
-        $this->initSse();
-
-        $lastRevision = (int)($_GET['since'] ?? ($_SERVER['HTTP_LAST_EVENT_ID'] ?? 0));
-        $heartbeatAt = time();
-
-        for ($i = 0; $i < 25; $i++) {
-            if (connection_aborted()) {
-                break;
-            }
-
-            $snapshot = $this->service->getLobbyRealtimeSnapshot($userId, $lobbyId);
-            $revision = (int)($snapshot['revision'] ?? 0);
-
-            if ($revision !== $lastRevision) {
-                $this->emitSse('lobby', $revision, $snapshot);
-                $lastRevision = $revision;
-                $heartbeatAt = time();
-            } elseif ((time() - $heartbeatAt) >= 10) {
-                echo ": ping\n\n";
-                $this->flushSse();
-                $heartbeatAt = time();
-            }
-
-            usleep(1000000);
-        }
-
-        exit;
-    }
-
-    public function streamPublicLobbies(): void
-    {
-        $this->initSse();
-
-        $lastRevision = (int)($_GET['since'] ?? ($_SERVER['HTTP_LAST_EVENT_ID'] ?? 0));
-        $heartbeatAt = time();
-
-        for ($i = 0; $i < 25; $i++) {
-            if (connection_aborted()) {
-                break;
-            }
-
-            $snapshot = $this->service->getPublicLobbiesRealtimeSnapshot();
-            $revision = (int)($snapshot['revision'] ?? 0);
-
-            if ($revision !== $lastRevision) {
-                $this->emitSse('lobbies', $revision, $snapshot);
-                $lastRevision = $revision;
-                $heartbeatAt = time();
-            } elseif ((time() - $heartbeatAt) >= 10) {
-                echo ": ping\n\n";
-                $this->flushSse();
-                $heartbeatAt = time();
-            }
-
-            usleep(1000000);
-        }
-
-        exit;
     }
 
     private function attachLobbyRealtime(array $data): array
@@ -373,10 +303,7 @@ class LobbyController
             return $data;
         }
 
-        $data['realtime'] = [
-            'transport' => 'sse',
-            'event' => 'lobby',
-        ];
+        $data['realtime'] = null;
 
         return $data;
     }
@@ -478,32 +405,5 @@ class LobbyController
         }
     }
 
-    private function initSse(): void
-    {
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
-
-        header('Content-Type: text/event-stream; charset=utf-8');
-        header('Cache-Control: no-cache, no-transform');
-        header('Connection: keep-alive');
-        header('X-Accel-Buffering: no');
-    }
-
-    private function emitSse(string $event, int $id, array $payload): void
-    {
-        echo 'id: ' . $id . "\n";
-        echo 'event: ' . $event . "\n";
-        echo 'data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
-        $this->flushSse();
-    }
-
-    private function flushSse(): void
-    {
-        if (function_exists('ob_flush')) {
-            @ob_flush();
-        }
-        flush();
-    }
 }
 
