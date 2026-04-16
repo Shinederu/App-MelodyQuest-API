@@ -26,6 +26,25 @@ Migration:
 - `sql/005_melodyquest_track_video_id_only.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
+## Import catalogue CSV
+
+Un script CLI permet d'importer l'export blindtest multi-sections (groupes, playlists, liaisons, tracks) dans le schema MelodyQuest.
+
+Mapping applique:
+
+- groupe racine -> `mq_categories`
+- `title` source -> `mq_families.name`
+- `alternative_title` -> `mq_family_aliases.alias`
+- playlist source -> `mq_tracks.title`
+- `youtube_url` source -> `mq_tracks.youtube_video_id`
+- `preview_start_seconds` -> `mq_tracks.start_offset_seconds`
+- `reveal_start_seconds` est ignore
+
+Commandes utiles:
+
+- `php melodyquest/scripts/import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --dry-run`
+- `php melodyquest/scripts/import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --created-by=1`
+
 ## Actions API (index.php)
 
 Base URL de production:
