@@ -1703,7 +1703,7 @@ class LobbyService
 
         $mediaSelect = $this->buildTrackMediaSelect('t');
         $trackStmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, ' . $mediaSelect . ', f.name AS family_name
+            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, ' . $mediaSelect . ', f.name AS family_name
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              WHERE t.id = :id
@@ -1791,6 +1791,7 @@ class LobbyService
 
         $row['youtube_video_id'] = $videoId;
         $row['youtube_url'] = mq_build_youtube_watch_url($videoId);
+        $row['start_offset_seconds'] = max(0, (int)($row['start_offset_seconds'] ?? 0));
 
         return $row;
     }
