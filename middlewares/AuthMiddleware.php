@@ -16,7 +16,7 @@ class AuthMiddleware
         $db = DatabaseService::getInstance();
         $stmt = $db->prepare(
             'SELECT s.user_id
-             FROM sessions s
+             FROM auth_sessions s
              WHERE s.id = :sid
                AND s.expires_at > NOW()
              LIMIT 1'
@@ -31,4 +31,3 @@ class AuthMiddleware
         return (int)$row['user_id'];
     }
 }
-
