@@ -82,7 +82,7 @@ Flux temps reel:
 - `GET action=streamLobby&lobby_id=...`
 - `GET action=streamPublicLobbies`
 
-Admin uniquement (`users.is_admin = 1 (ou users.role = 'admin')`):
+Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin global):
 
 - `POST action=createCategory`
 - `POST action=createFamily`
@@ -121,7 +121,8 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 ## Regle admin
 
 Le statut admin n'est pas expose au frontend pour elevation.
-Il est derive de users.is_admin (si present) ou users.role='admin', et se gere manuellement en base.
+Les droits catalogue sont portes par les tables `core_*` (`melodyquest.catalog_admin` / `catalog.manage`).
+Pendant la transition, `users.role='admin'` reste un fallback super-admin global.
 
 
 
