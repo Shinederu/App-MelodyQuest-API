@@ -4,7 +4,7 @@
 
 - Les fichiers `API/melodyquest/*` deployes sur le serveur API.
 - Base de donnees `ShinedeCore` a jour avec `sql/001_melodyquest_core.sql`, `sql/003_melodyquest_family_aliases.sql` et `sql/004_melodyquest_track_validation.sql`.
-- Au moins un utilisateur avec `users.is_admin = 1 (ou users.role = 'admin')` pour les tests admin.
+- Au moins un utilisateur avec `melodyquest.catalog.manage` via les droits `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/` (index + assets).
 
 ## Variables d'environnement

@@ -121,7 +121,8 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 ## Regle admin
 
 Le statut admin n'est pas expose au frontend pour elevation.
-Les droits catalogue sont portes par les tables `core_*` (`melodyquest.catalog_admin` / `catalog.manage`).
+Les droits catalogue sont portes par les tables `core_*`.
+Le role seed par defaut est `melodyquest.catalog_admin`; il donne la permission backend `catalog.manage`, souvent notee `melodyquest.catalog.manage` dans la documentation.
 Pendant la transition, `users.role='admin'` reste un fallback super-admin global.
 
 
