@@ -25,6 +25,15 @@ class CatalogService
                     c.updated_at,
                     COUNT(DISTINCT CASE
                         WHEN f.is_active = 1
+                        THEN f.id
+                    END) AS family_count,
+                    COUNT(DISTINCT CASE
+                        WHEN f.is_active = 1
+                         AND t.is_active = 1
+                        THEN t.id
+                    END) AS total_track_count,
+                    COUNT(DISTINCT CASE
+                        WHEN f.is_active = 1
                          AND t.is_active = 1
                          AND t.is_validated = 1
                         THEN t.id
