@@ -398,6 +398,105 @@ class CatalogService
 
         $this->requireTrackRecord($id);
 
+        $updated = $this->applyTrackUpdates($userId, $id, $payload, true, false);
+
+        return ['id' => $id, 'updated' => $updated];
+    }
+
+    public function validateTrack(int $userId, int $trackId, array $payload = []): array
+    {
+        if ($trackId <= 0) {
+            throw new RuntimeException('id musique requis');
+        }
+
+        $this->requireTrackRecord($trackId);
+
+        $this->db->beginTransaction();
+        try {
+            $corrected = $this->applyTrackUpdates($userId, $trackId, $payload, false, true);
+
+            $stmt = $this->db->prepare(
+                'UPDATE mq_tracks
+                 SET is_validated = 1,
+                     validated_by = :validated_by,
+                     validated_at = NOW()
+                 WHERE id = :id'
+            );
+            $stmt->execute([
+                'id' => $trackId,
+                'validated_by' => $userId,
+            ]);
+
+            $this->db->commit();
+
+            return [
+                'id' => $trackId,
+                'validated' => 1,
+                'corrected' => $corrected,
+                'updated' => $corrected + $stmt->rowCount(),
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    public function unvalidateTrack(int $trackId): array
+    {
+        if ($trackId <= 0) {
+            throw new RuntimeException('id musique requis');
+        }
+
+        $this->requireTrackRecord($trackId);
+
+        $stmt = $this->db->prepare(
+            'UPDATE mq_tracks
+             SET is_validated = 0,
+                 validated_by = NULL,
+                 validated_at = NULL
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            'id' => $trackId,
+        ]);
+
+        return ['id' => $trackId, 'validated' => 0, 'updated' => $stmt->rowCount()];
+    }
+
+    public function deleteCategory(int $id): array
+    {
+        if ($id <= 0) {
+            throw new RuntimeException('id categorie requis');
+        }
+        $stmt = $this->db->prepare('DELETE FROM mq_categories WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        return ['id' => $id, 'deleted' => $stmt->rowCount()];
+    }
+
+    public function deleteFamily(int $id): array
+    {
+        if ($id <= 0) {
+            throw new RuntimeException('id famille requis');
+        }
+        $stmt = $this->db->prepare('DELETE FROM mq_families WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        return ['id' => $id, 'deleted' => $stmt->rowCount()];
+    }
+
+    public function deleteTrack(int $id): array
+    {
+        if ($id <= 0) {
+            throw new RuntimeException('id musique requis');
+        }
+        $stmt = $this->db->prepare('DELETE FROM mq_tracks WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        return ['id' => $id, 'deleted' => $stmt->rowCount()];
+    }
+
+    private function applyTrackUpdates(int $userId, int $id, array $payload, bool $markPending, bool $allowEmpty): int
+    {
         $sets = [];
         $params = ['id' => $id];
 
@@ -455,96 +554,26 @@ class CatalogService
         }
 
         if (empty($sets)) {
+            if ($allowEmpty) {
+                return 0;
+            }
             throw new RuntimeException('Aucun champ a modifier');
         }
 
-        $sets[] = 'is_validated = :is_validated';
-        $sets[] = 'validated_by = :validated_by';
-        $sets[] = 'validated_at = :validated_at';
-        $params['is_validated'] = 0;
-        $params['validated_by'] = null;
-        $params['validated_at'] = null;
+        if ($markPending) {
+            $sets[] = 'is_validated = :is_validated';
+            $sets[] = 'validated_by = :validated_by';
+            $sets[] = 'validated_at = :validated_at';
+            $params['is_validated'] = 0;
+            $params['validated_by'] = null;
+            $params['validated_at'] = null;
+        }
 
         $sql = 'UPDATE mq_tracks SET ' . implode(', ', $sets) . ' WHERE id = :id';
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
 
-        return ['id' => $id, 'updated' => $stmt->rowCount()];
-    }
-
-    public function validateTrack(int $userId, int $trackId): array
-    {
-        if ($trackId <= 0) {
-            throw new RuntimeException('id musique requis');
-        }
-
-        $this->requireTrackRecord($trackId);
-
-        $stmt = $this->db->prepare(
-            'UPDATE mq_tracks
-             SET is_validated = 1,
-                 validated_by = :validated_by,
-                 validated_at = NOW()
-             WHERE id = :id'
-        );
-        $stmt->execute([
-            'id' => $trackId,
-            'validated_by' => $userId,
-        ]);
-
-        return ['id' => $trackId, 'validated' => 1, 'updated' => $stmt->rowCount()];
-    }
-
-    public function unvalidateTrack(int $trackId): array
-    {
-        if ($trackId <= 0) {
-            throw new RuntimeException('id musique requis');
-        }
-
-        $this->requireTrackRecord($trackId);
-
-        $stmt = $this->db->prepare(
-            'UPDATE mq_tracks
-             SET is_validated = 0,
-                 validated_by = NULL,
-                 validated_at = NULL
-             WHERE id = :id'
-        );
-        $stmt->execute([
-            'id' => $trackId,
-        ]);
-
-        return ['id' => $trackId, 'validated' => 0, 'updated' => $stmt->rowCount()];
-    }
-
-    public function deleteCategory(int $id): array
-    {
-        if ($id <= 0) {
-            throw new RuntimeException('id categorie requis');
-        }
-        $stmt = $this->db->prepare('DELETE FROM mq_categories WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        return ['id' => $id, 'deleted' => $stmt->rowCount()];
-    }
-
-    public function deleteFamily(int $id): array
-    {
-        if ($id <= 0) {
-            throw new RuntimeException('id famille requis');
-        }
-        $stmt = $this->db->prepare('DELETE FROM mq_families WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        return ['id' => $id, 'deleted' => $stmt->rowCount()];
-    }
-
-    public function deleteTrack(int $id): array
-    {
-        if ($id <= 0) {
-            throw new RuntimeException('id musique requis');
-        }
-        $stmt = $this->db->prepare('DELETE FROM mq_tracks WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        return ['id' => $id, 'deleted' => $stmt->rowCount()];
+        return $stmt->rowCount();
     }
 
     private function resolveTrackFamilyId(int $userId, array $payload, bool $required): ?int

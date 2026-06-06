@@ -96,6 +96,8 @@ Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin glob
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`
 
+`validateTrack` accepte au minimum `track_id` ou `id`. Il peut aussi recevoir les champs de correction `category_id`, `family_name`, `title`, `artist`, `youtube_video_id` ou `youtube_url`; dans ce cas l'API applique ces corrections puis valide la musique dans une meme transaction.
+
 ## Environnement
 
 Le backend MelodyQuest charge le meme runtime `.env` que `auth`.

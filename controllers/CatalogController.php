@@ -73,7 +73,7 @@ class CatalogController
     public function validateTrack(int $userId, array $payload): void
     {
         $trackId = (int)($payload['track_id'] ?? $payload['id'] ?? 0);
-        $result = $this->service->validateTrack($userId, $trackId);
+        $result = $this->service->validateTrack($userId, $trackId, $payload);
         json_success('Musique validee', $result);
     }
 
