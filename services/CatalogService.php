@@ -51,10 +51,27 @@ class CatalogService
     {
         if ($categoryId) {
             $stmt = $this->db->prepare(
-                'SELECT f.id, f.category_id, c.name AS category_name, f.name, f.slug, f.description, f.is_active
+                'SELECT f.id,
+                        f.category_id,
+                        c.name AS category_name,
+                        f.name,
+                        f.slug,
+                        f.description,
+                        f.is_active,
+                        COUNT(DISTINCT CASE
+                            WHEN t.is_active = 1
+                            THEN t.id
+                        END) AS track_count,
+                        COUNT(DISTINCT CASE
+                            WHEN t.is_active = 1
+                             AND t.is_validated = 1
+                            THEN t.id
+                        END) AS playable_track_count
                  FROM mq_families f
                  JOIN mq_categories c ON c.id = f.category_id
+                 LEFT JOIN mq_tracks t ON t.family_id = f.id
                  WHERE f.category_id = :category_id
+                 GROUP BY f.id, f.category_id, c.name, f.name, f.slug, f.description, f.is_active
                  ORDER BY f.name ASC'
             );
             $stmt->execute(['category_id' => $categoryId]);
@@ -62,9 +79,26 @@ class CatalogService
         }
 
         $stmt = $this->db->query(
-            'SELECT f.id, f.category_id, c.name AS category_name, f.name, f.slug, f.description, f.is_active
+            'SELECT f.id,
+                    f.category_id,
+                    c.name AS category_name,
+                    f.name,
+                    f.slug,
+                    f.description,
+                    f.is_active,
+                    COUNT(DISTINCT CASE
+                        WHEN t.is_active = 1
+                        THEN t.id
+                    END) AS track_count,
+                    COUNT(DISTINCT CASE
+                        WHEN t.is_active = 1
+                         AND t.is_validated = 1
+                        THEN t.id
+                    END) AS playable_track_count
              FROM mq_families f
              JOIN mq_categories c ON c.id = f.category_id
+             LEFT JOIN mq_tracks t ON t.family_id = f.id
+             GROUP BY f.id, f.category_id, c.name, f.name, f.slug, f.description, f.is_active
              ORDER BY c.name ASC, f.name ASC'
         );
         return $this->hydrateFamilyAliases($stmt->fetchAll());
