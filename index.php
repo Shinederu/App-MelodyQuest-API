@@ -135,6 +135,10 @@ try {
                     $userId = AuthMiddleware::check();
                     $lobbyController->voteNextRound($userId, $body);
                     break;
+                case 'voteRevealRound':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->voteRevealRound($userId, $body);
+                    break;
                 case 'submitAnswer':
                     $userId = AuthMiddleware::check();
                     $lobbyController->submitAnswer($userId, $body);

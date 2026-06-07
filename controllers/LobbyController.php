@@ -20,7 +20,7 @@ class LobbyController
         $data = $this->service->createLobby($userId, $payload);
         $data = $this->attachLobbyRealtime($data);
         $this->publishLobbySnapshot((int)($data['lobby']['id'] ?? 0), true);
-        json_success('Lobby cree', $data, 201);
+        json_success('Lobby créé', $data, 201);
     }
 
     public function join(int $userId, array $payload): void
@@ -45,7 +45,7 @@ class LobbyController
 
         $data = $this->service->leaveLobby($userId, $lobbyId);
         $this->publishLobbySnapshot($lobbyId, true);
-        json_success('Lobby quitte', $data);
+        json_success('Lobby quitté', $data);
     }
 
     public function touch(int $userId, array $payload): void
@@ -83,7 +83,7 @@ class LobbyController
 
         $data = $this->service->deleteLobby($userId, $lobbyId);
         $this->publishDeletedLobby((string)($data['lobby_code'] ?? ''), $lobbyId, true);
-        json_success('Lobby supprime', $data);
+        json_success('Lobby supprimé', $data);
     }
 
     public function getByCode(int $userId, array $payload): void
@@ -170,7 +170,7 @@ class LobbyController
 
         $data = $this->service->removeTrackFromPool($userId, $lobbyId, $trackId);
         $this->publishLobbySnapshot($lobbyId, false);
-        json_success('Track retire du pool', $data);
+        json_success('Track retirée du pool', $data);
     }
 
     public function listTrackPool(int $userId, array $payload): void
@@ -193,7 +193,7 @@ class LobbyController
 
         $data = $this->service->startRound($userId, $lobbyId, $payload);
         $this->publishLobbySnapshot($lobbyId, true);
-        json_success('Manche demarree', $data);
+        json_success('Manche démarrée', $data);
     }
 
     public function revealRound(int $userId, array $payload): void
@@ -217,7 +217,7 @@ class LobbyController
 
         $data = $this->service->finishCurrentRound($userId, $lobbyId);
         $this->publishLobbySnapshot($lobbyId, true);
-        json_success('Manche terminee', $data);
+        json_success('Manche terminée', $data);
     }
 
     public function voteNextRound(int $userId, array $payload): void
@@ -229,7 +229,19 @@ class LobbyController
 
         $data = $this->service->voteNextRound($userId, $lobbyId);
         $this->publishLobbySnapshot($lobbyId, true);
-        json_success('Vote enregistre', $data);
+        json_success('Vote enregistré', $data);
+    }
+
+    public function voteRevealRound(int $userId, array $payload): void
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        if ($lobbyId <= 0) {
+            json_error('lobby_id requis', 400);
+        }
+
+        $data = $this->service->voteRevealRound($userId, $lobbyId);
+        $this->publishLobbySnapshot($lobbyId, false);
+        json_success('Vote de révélation enregistré', $data);
     }
 
     public function submitAnswer(int $userId, array $payload): void
@@ -241,7 +253,7 @@ class LobbyController
 
         $data = $this->service->submitAnswer($userId, $lobbyId, $payload);
         $this->publishLobbySnapshot($lobbyId, false);
-        json_success('Reponse enregistree', $data);
+        json_success('Réponse enregistrée', $data);
     }
 
     public function getRoundState(int $userId, array $payload): void

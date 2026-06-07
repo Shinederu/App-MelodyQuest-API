@@ -41,6 +41,9 @@ class LobbyService
             $guessMode = 'both';
         }
 
+        $showTrackCategory = $this->normalizeBoolean($payload['show_track_category'] ?? false);
+        $allowEarlyRevealVote = $this->normalizeBoolean($payload['allow_early_reveal_vote'] ?? true);
+
         $selectedCategoryIds = array_key_exists('selected_category_ids', $payload)
             ? $this->normalizeCategoryIds($payload['selected_category_ids'])
             : $this->getDefaultSelectedCategoryIds();
@@ -51,8 +54,8 @@ class LobbyService
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO mq_lobbies
-                (lobby_code, name, owner_user_id, status, visibility, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids)
-                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids)'
+                (lobby_code, name, owner_user_id, status, visibility, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote)
+                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote)'
             );
             $stmt->execute([
                 'code' => $code,
@@ -65,6 +68,8 @@ class LobbyService
                 'reveal_duration' => $revealDuration,
                 'guess_mode' => $guessMode,
                 'selected_category_ids' => $this->encodeCategoryIds($selectedCategoryIds),
+                'show_track_category' => $showTrackCategory,
+                'allow_early_reveal_vote' => $allowEarlyRevealVote,
             ]);
 
             $lobbyId = (int)$this->db->lastInsertId();
@@ -187,7 +192,7 @@ class LobbyService
         $this->requireOwner($lobby, $ownerUserId);
 
         if ($targetUserId === $ownerUserId) {
-            throw new RuntimeException('Le createur ne peut pas s exclure lui-meme');
+            throw new RuntimeException('Le créateur ne peut pas s\'exclure lui-même');
         }
 
         $this->requireLobbyMember($lobbyId, $targetUserId);
@@ -246,7 +251,7 @@ class LobbyService
                     return $this->getLobbyById($lobbyId);
                 }
 
-                throw new RuntimeException('Le lobby n est pas dans un etat relancable');
+                throw new RuntimeException('Le lobby n\'est pas dans un état relançable');
             }
 
             $this->db->prepare(
@@ -347,6 +352,14 @@ class LobbyService
                 $this->normalizeCategoryIds($payload['selected_category_ids'])
             );
         }
+        if (array_key_exists('show_track_category', $payload)) {
+            $fields[] = 'show_track_category = :show_track_category';
+            $params['show_track_category'] = $this->normalizeBoolean($payload['show_track_category']);
+        }
+        if (array_key_exists('allow_early_reveal_vote', $payload)) {
+            $fields[] = 'allow_early_reveal_vote = :allow_early_reveal_vote';
+            $params['allow_early_reveal_vote'] = $this->normalizeBoolean($payload['allow_early_reveal_vote']);
+        }
 
         if (!empty($fields)) {
             $sql = 'UPDATE mq_lobbies SET ' . implode(', ', $fields) . ' WHERE id = :id';
@@ -421,13 +434,13 @@ class LobbyService
 
         $running = $this->getCurrentRoundRow($lobbyId);
         if ($running) {
-            throw new RuntimeException('Une manche est deja en cours');
+            throw new RuntimeException('Une manche est déjà en cours');
         }
 
         $finishedRounds = $this->countFinishedRounds($lobbyId);
         $targetRounds = $launchConfig['total_rounds'];
         if ($finishedRounds >= $targetRounds) {
-            throw new RuntimeException('Toutes les manches de ce lobby ont deja ete jouees');
+            throw new RuntimeException('Toutes les manches de ce lobby ont déjà été jouées');
         }
 
         $trackId = isset($payload['track_id']) ? (int)$payload['track_id'] : 0;
@@ -547,7 +560,7 @@ class LobbyService
             }
 
             if (!$this->isNextVoteWindowOpen($lobby, $round)) {
-                throw new RuntimeException('Le passage a la manche suivante n est pas encore disponible');
+                throw new RuntimeException('Le passage à la manche suivante n\'est pas encore disponible');
             }
 
             $this->db->prepare(
@@ -616,6 +629,71 @@ class LobbyService
         }
     }
 
+    public function voteRevealRound(int $userId, int $lobbyId): array
+    {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+
+        $this->db->beginTransaction();
+        try {
+            $lobby = $this->requireLobbyForUpdate($lobbyId);
+            $this->requireLobbyMember($lobbyId, $userId);
+
+            if (!$this->normalizeBoolean($lobby['allow_early_reveal_vote'] ?? false)) {
+                throw new RuntimeException('Le vote de révélation est désactivé pour ce salon');
+            }
+
+            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
+            if (!$round) {
+                throw new RuntimeException('Aucune manche en cours');
+            }
+
+            if (strtolower((string)($round['status'] ?? '')) !== 'running') {
+                throw new RuntimeException('La réponse est déjà révélée');
+            }
+
+            if (!$this->isRoundAnswerWindowOpen($lobby, $round)) {
+                throw new RuntimeException('Le chrono est déjà terminé');
+            }
+
+            if ($this->countSolvedPlayersForRound((int)$round['id']) > 0) {
+                throw new RuntimeException('Un joueur a déjà trouvé la réponse');
+            }
+
+            $this->db->prepare(
+                'INSERT INTO mq_round_reveal_votes (round_id, user_id, voted_at)
+                 VALUES (:round_id, :user_id, NOW(3))
+                 ON DUPLICATE KEY UPDATE voted_at = VALUES(voted_at)'
+            )->execute([
+                'round_id' => $round['id'],
+                'user_id' => $userId,
+            ]);
+
+            $playersCount = $this->countLobbyPlayers($lobbyId);
+            $requiredCount = max(1, (int)ceil($playersCount * 0.5));
+            $votesCount = $this->countEarlyRevealVotes((int)$round['id']);
+            $revealed = false;
+
+            if ($votesCount >= $requiredCount) {
+                $revealed = $this->transitionRoundToReveal($lobbyId, (int)$round['id'], false, $lobby);
+            }
+
+            $this->db->commit();
+
+            return [
+                'revealed' => $revealed,
+                'votes_count' => $votesCount,
+                'required_count' => $requiredCount,
+                'players_count' => $playersCount,
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     public function submitAnswer(int $userId, int $lobbyId, array $payload): array
     {
         $this->touchLobbyMember($lobbyId, $userId);
@@ -630,7 +708,7 @@ class LobbyService
         }
 
         if (!$this->isRoundAnswerWindowOpen($lobby, $round)) {
-            throw new RuntimeException('Le temps de reponse est ecoule');
+            throw new RuntimeException('Le temps de réponse est écoulé');
         }
 
         $trackStmt = $this->db->prepare(
@@ -694,7 +772,7 @@ class LobbyService
             }
 
             if (!$this->isRoundAnswerWindowOpen($lockedLobby, $lockedRound)) {
-                throw new RuntimeException('Le temps de reponse est ecoule');
+                throw new RuntimeException('Le temps de réponse est écoulé');
             }
 
             $upsert = $this->db->prepare(
@@ -838,7 +916,7 @@ class LobbyService
         $lobby = $this->requireLobby($lobbyId);
 
         $playersStmt = $this->db->prepare(
-            'SELECT lp.user_id, lp.role, lp.is_ready, lp.score, lp.joined_at, u.username
+            'SELECT lp.user_id, lp.role, lp.is_ready, lp.score, lp.joined_at, u.username, u.avatar_url
              FROM mq_lobby_players lp
              JOIN users u ON u.id = lp.user_id
              WHERE lp.lobby_id = :id
@@ -875,7 +953,7 @@ class LobbyService
         $lobbyId = (int)$row['id'];
         $isMember = $this->isLobbyMember($lobbyId, $userId);
         if (!$isMember && (string)$row['visibility'] !== 'public') {
-            throw new RuntimeException('Acces refuse a ce lobby prive');
+            throw new RuntimeException('Accès refusé à ce lobby privé');
         }
 
         if ($isMember) {
@@ -932,7 +1010,7 @@ class LobbyService
         $this->cleanupStaleOwnerLobbies();
 
         $stmt = $this->db->query(
-            'SELECT l.id, l.lobby_code, l.name, l.status, l.max_players, l.owner_user_id, u.username AS owner_username,
+            'SELECT l.id, l.lobby_code, l.name, l.status, l.max_players, l.owner_user_id, u.username AS owner_username, u.avatar_url AS owner_avatar_url,
                     (SELECT COUNT(*) FROM mq_lobby_players lp WHERE lp.lobby_id = l.id) AS players_count
              FROM mq_lobbies l
              JOIN users u ON u.id = l.owner_user_id
@@ -1006,7 +1084,15 @@ class LobbyService
                     COALESCE((SELECT MAX(a.id)
                               FROM mq_round_answers a
                               JOIN mq_rounds r2 ON r2.id = a.round_id
-                              WHERE r2.lobby_id = l.id), 0) AS max_answer_id
+                              WHERE r2.lobby_id = l.id), 0) AS max_answer_id,
+                    COALESCE((SELECT MAX(UNIX_TIMESTAMP(v.voted_at))
+                              FROM mq_round_reveal_votes v
+                              JOIN mq_rounds r3 ON r3.id = v.round_id
+                              WHERE r3.lobby_id = l.id), 0) AS max_reveal_vote,
+                    COALESCE((SELECT COUNT(*)
+                              FROM mq_round_reveal_votes v2
+                              JOIN mq_rounds r4 ON r4.id = v2.round_id
+                              WHERE r4.lobby_id = l.id), 0) AS reveal_vote_count
              FROM mq_lobbies l
              WHERE l.id = :id
              LIMIT 1'
@@ -1025,6 +1111,8 @@ class LobbyService
             (int)$row['pool_updated'],
             (int)$row['max_round_id'],
             (int)$row['max_answer_id'],
+            (int)$row['max_reveal_vote'],
+            (int)$row['reveal_vote_count'],
         ]);
 
         return abs((int)crc32($seed));
@@ -1086,14 +1174,14 @@ class LobbyService
     private function requireOwner(array $lobby, int $userId): void
     {
         if ((int)$lobby['owner_user_id'] !== $userId) {
-            throw new RuntimeException('Seul le createur peut effectuer cette action');
+            throw new RuntimeException('Seul le créateur peut effectuer cette action');
         }
     }
 
     private function requireLobbyMember(int $lobbyId, int $userId): void
     {
         if (!$this->isLobbyMember($lobbyId, $userId)) {
-            throw new RuntimeException('Utilisateur non present dans ce lobby');
+            throw new RuntimeException('Utilisateur non présent dans ce lobby');
         }
     }
 
@@ -1149,7 +1237,7 @@ class LobbyService
         $lobby = $this->requireLobby($lobbyId);
         $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
         if (empty($selectedCategoryIds)) {
-            throw new RuntimeException('Selectionne au moins une categorie avant de lancer la partie');
+            throw new RuntimeException('Sélectionne au moins une catégorie avant de lancer la partie');
         }
 
         $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
@@ -1170,7 +1258,7 @@ class LobbyService
             return $trackId;
         }
 
-        throw new RuntimeException('Aucune musique disponible pour les categories selectionnees');
+        throw new RuntimeException('Aucune musique disponible pour les catégories sélectionnées');
     }
 
     private function getPlayedTrackIds(int $lobbyId): array
@@ -1285,6 +1373,18 @@ class LobbyService
              FROM mq_round_answers
              WHERE round_id = :round_id
                AND score_awarded > 0'
+        );
+        $stmt->execute(['round_id' => $roundId]);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function countEarlyRevealVotes(int $roundId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) AS c
+             FROM mq_round_reveal_votes
+             WHERE round_id = :round_id'
         );
         $stmt->execute(['round_id' => $roundId]);
 
@@ -1497,12 +1597,12 @@ class LobbyService
         $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
 
         if (empty($selectedCategoryIds)) {
-            throw new RuntimeException('Selectionne au moins une categorie avant de lancer la partie');
+            throw new RuntimeException('Sélectionne au moins une catégorie avant de lancer la partie');
         }
 
         $availableTracks = $this->countAvailableTracksForCategories($selectedCategoryIds);
         if ($availableTracks <= 0) {
-            throw new RuntimeException('Aucune musique valide n est disponible dans les categories selectionnees');
+            throw new RuntimeException('Aucune musique valide n\'est disponible dans les catégories sélectionnées');
         }
 
         if ($availableTracks < $totalRounds) {
@@ -1595,6 +1695,20 @@ class LobbyService
         }
 
         return substr($name, 0, 120);
+    }
+
+    private function normalizeBoolean($raw): int
+    {
+        if (is_bool($raw)) {
+            return $raw ? 1 : 0;
+        }
+
+        if (is_numeric($raw)) {
+            return ((int)$raw) === 1 ? 1 : 0;
+        }
+
+        $value = strtolower(trim((string)$raw));
+        return in_array($value, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
     }
 
     private function encodeCategoryIds(array $ids): ?string
@@ -1703,9 +1817,10 @@ class LobbyService
 
         $mediaSelect = $this->buildTrackMediaSelect('t');
         $trackStmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, ' . $mediaSelect . ', f.name AS family_name
+            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, ' . $mediaSelect . ', f.id AS family_id, f.name AS family_name, c.id AS category_id, c.name AS category_name
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
+             JOIN mq_categories c ON c.id = f.category_id
              WHERE t.id = :id
              LIMIT 1'
         );
@@ -1751,13 +1866,14 @@ class LobbyService
                 'track' => $track ?: null,
             ],
             'answers' => $answers,
+            'early_reveal_votes' => $this->buildEarlyRevealVoteSnapshot((int)$round['id']),
         ];
     }
 
     private function buildScoreboardSnapshot(int $lobbyId): array
     {
         $stmt = $this->db->prepare(
-            'SELECT lp.user_id, u.username, lp.role, lp.score
+            'SELECT lp.user_id, u.username, u.avatar_url, lp.role, lp.score
              FROM mq_lobby_players lp
              JOIN users u ON u.id = lp.user_id
              WHERE lp.lobby_id = :lobby_id
@@ -1766,6 +1882,20 @@ class LobbyService
         $stmt->execute(['lobby_id' => $lobbyId]);
 
         return ['items' => $stmt->fetchAll()];
+    }
+
+    private function buildEarlyRevealVoteSnapshot(int $roundId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT v.user_id, u.username, u.avatar_url, v.voted_at
+             FROM mq_round_reveal_votes v
+             JOIN users u ON u.id = v.user_id
+             WHERE v.round_id = :round_id
+             ORDER BY v.voted_at ASC'
+        );
+        $stmt->execute(['round_id' => $roundId]);
+
+        return $stmt->fetchAll();
     }
 
     private function buildTrackMediaSelect(string $alias): string
@@ -1886,7 +2016,7 @@ class LobbyService
             }
         }
 
-        throw new RuntimeException('Impossible de generer un code de lobby unique');
+        throw new RuntimeException('Impossible de générer un code de lobby unique');
     }
 }
 

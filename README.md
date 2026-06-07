@@ -24,7 +24,10 @@ Migration:
 - `sql/003_melodyquest_family_aliases.sql`
 - `sql/004_melodyquest_track_validation.sql`
 - `sql/005_melodyquest_track_video_id_only.sql`
+- `sql/007_melodyquest_game_options.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
+
+La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lobbies.allow_early_reveal_vote`, ainsi que la table `mq_round_reveal_votes` pour le vote de revelation anticipee.
 
 ## Import catalogue CSV
 
@@ -67,6 +70,8 @@ Authentifie:
 - `POST action=startRound`
 - `POST action=revealRound`
 - `POST action=finishRound`
+- `POST action=voteNextRound`
+- `POST action=voteRevealRound`
 - `POST action=submitAnswer`
 - `GET action=getRoundState&lobby_id=...`
 - `GET action=getScoreboard&lobby_id=...`
@@ -74,6 +79,10 @@ Authentifie:
 - `GET action=listCategories`
 - `GET action=listFamilies&category_id=...` (optionnel)
 - `GET action=listTracks&family_id=...` (optionnel)
+
+`updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category` et `allow_early_reveal_vote`.
+`voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve.
+`getRoundState` renvoie `round.track.category_id`, `round.track.category_name` et `early_reveal_votes` pour l'interface de jeu.
 
 Flux temps reel:
 
