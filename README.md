@@ -118,6 +118,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
   - `MERCURE_PUBLISH_URL` (optionnel, recommande en interne Docker)
   - `MERCURE_PUBLISHER_JWT_KEY`
   - `MERCURE_SUBSCRIBER_JWT_KEY`
+- `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
   - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure
