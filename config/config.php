@@ -13,6 +13,7 @@ define('MQ_MIN_NEXT_VOTE_DELAY_SECONDS', 10);
 define('MQ_MAX_CORRECT_ANSWER_SCORE', 1000);
 define('MQ_MIN_CORRECT_ANSWER_SCORE', 10);
 define('MQ_OWNER_STALE_TIMEOUT_SECONDS', max(60, (int)($_ENV['MQ_OWNER_STALE_TIMEOUT_SECONDS'] ?? 300)));
+define('MQ_AUTH_BASE_API', $_ENV['MQ_AUTH_BASE_API'] ?? $_ENV['BASE_API'] ?? 'https://api.shinederu.ch/auth/');
 
 define('MQ_MERCURE_HUB_URL', $_ENV['MQ_MERCURE_HUB_URL'] ?? $_ENV['MERCURE_HUB_URL'] ?? 'https://mercure.shinederu.ch/.well-known/mercure');
 define('MQ_MERCURE_PUBLISH_URL', $_ENV['MQ_MERCURE_PUBLISH_URL'] ?? $_ENV['MERCURE_PUBLISH_URL'] ?? MQ_MERCURE_HUB_URL);

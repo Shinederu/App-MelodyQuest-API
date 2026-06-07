@@ -12,6 +12,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Validation manuelle des nouvelles musiques avant usage en partie
 - Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
+- Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
 - Administration musicale reservee aux admins (flag admin modifie manuellement en DB)
 
 ## Base de donnees
@@ -119,6 +120,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
   - `MERCURE_PUBLISHER_JWT_KEY`
   - `MERCURE_SUBSCRIBER_JWT_KEY`
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
+- `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
   - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure

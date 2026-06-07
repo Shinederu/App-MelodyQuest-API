@@ -923,7 +923,7 @@ class LobbyService
              ORDER BY lp.joined_at ASC'
         );
         $playersStmt->execute(['id' => $lobbyId]);
-        $players = $playersStmt->fetchAll();
+        $players = $this->hydrateAvatarRows($playersStmt->fetchAll(), 'avatar_url', 'user_id');
 
         $lobby['selected_category_ids'] = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
 
@@ -1020,7 +1020,9 @@ class LobbyService
              LIMIT 100'
         );
 
-        return ['items' => $stmt->fetchAll()];
+        $items = $this->hydrateAvatarRows($stmt->fetchAll(), 'owner_avatar_url', 'owner_user_id');
+
+        return ['items' => $items];
     }
 
     private function touchLobbyMember(int $lobbyId, int $userId): void
@@ -1881,7 +1883,7 @@ class LobbyService
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
 
-        return ['items' => $stmt->fetchAll()];
+        return ['items' => $this->hydrateAvatarRows($stmt->fetchAll(), 'avatar_url', 'user_id')];
     }
 
     private function buildEarlyRevealVoteSnapshot(int $roundId): array
@@ -1895,7 +1897,7 @@ class LobbyService
         );
         $stmt->execute(['round_id' => $roundId]);
 
-        return $stmt->fetchAll();
+        return $this->hydrateAvatarRows($stmt->fetchAll(), 'avatar_url', 'user_id');
     }
 
     private function buildTrackMediaSelect(string $alias): string
@@ -1905,6 +1907,62 @@ class LobbyService
         }
 
         return $alias . '.youtube_video_id, NULL AS youtube_url';
+    }
+
+    private function hydrateAvatarRows(array $rows, string $avatarColumn, string $userIdColumn): array
+    {
+        return array_map(function (array $row) use ($avatarColumn, $userIdColumn): array {
+            $row[$avatarColumn] = $this->normalizeAvatarUrl(
+                $row[$avatarColumn] ?? null,
+                isset($row[$userIdColumn]) ? (int)$row[$userIdColumn] : 0
+            );
+
+            return $row;
+        }, $rows);
+    }
+
+    private function normalizeAvatarUrl($avatarUrl, int $userId): string
+    {
+        $avatarUrl = trim((string)($avatarUrl ?? ''));
+        if ($avatarUrl === '') {
+            return '';
+        }
+
+        if (!str_contains($avatarUrl, 'action=getAvatar')) {
+            return $avatarUrl;
+        }
+
+        if ($userId <= 0) {
+            return $avatarUrl;
+        }
+
+        $version = null;
+        $query = parse_url($avatarUrl, PHP_URL_QUERY);
+        if (is_string($query) && $query !== '') {
+            $params = [];
+            parse_str($query, $params);
+            if (isset($params['v']) && (string)$params['v'] !== '') {
+                $version = (string)$params['v'];
+            }
+        }
+
+        return $this->buildAuthAvatarUrl($userId, $version);
+    }
+
+    private function buildAuthAvatarUrl(int $userId, ?string $version = null): string
+    {
+        $base = rtrim(MQ_AUTH_BASE_API, '/');
+        $separator = str_ends_with($base, 'index.php') ? '?' : '/?';
+        $params = [
+            'action' => 'getAvatar',
+            'user_id' => $userId,
+        ];
+
+        if ($version !== null && $version !== '') {
+            $params['v'] = $version;
+        }
+
+        return $base . $separator . http_build_query($params);
     }
 
     private function hydrateTrackRows(array $rows): array
