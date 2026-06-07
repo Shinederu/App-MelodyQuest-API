@@ -414,6 +414,12 @@ class CatalogService
         $this->db->beginTransaction();
         try {
             $corrected = $this->applyTrackUpdates($userId, $trackId, $payload, false, true);
+            $aliasesUpdated = 0;
+
+            if (array_key_exists('aliases', $payload)) {
+                $this->syncTrackFamilyAliases($userId, $trackId, $payload);
+                $aliasesUpdated = 1;
+            }
 
             $stmt = $this->db->prepare(
                 'UPDATE mq_tracks
@@ -433,6 +439,7 @@ class CatalogService
                 'id' => $trackId,
                 'validated' => 1,
                 'corrected' => $corrected,
+                'aliases_updated' => $aliasesUpdated,
                 'updated' => $corrected + $stmt->rowCount(),
             ];
         } catch (Throwable $e) {
@@ -493,6 +500,23 @@ class CatalogService
         $stmt = $this->db->prepare('DELETE FROM mq_tracks WHERE id = :id');
         $stmt->execute(['id' => $id]);
         return ['id' => $id, 'deleted' => $stmt->rowCount()];
+    }
+
+    private function syncTrackFamilyAliases(int $userId, int $trackId, array $payload): void
+    {
+        if (
+            array_key_exists('family_id', $payload)
+            || array_key_exists('category_id', $payload)
+            || array_key_exists('family_name', $payload)
+        ) {
+            $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
+        } else {
+            $track = $this->requireTrackRecord($trackId);
+            $familyId = (int)$track['family_id'];
+        }
+
+        $family = $this->requireFamilyRecord($familyId);
+        $this->syncFamilyAliases($userId, $familyId, (string)$family['name'], $payload['aliases']);
     }
 
     private function applyTrackUpdates(int $userId, int $id, array $payload, bool $markPending, bool $allowEmpty): int
