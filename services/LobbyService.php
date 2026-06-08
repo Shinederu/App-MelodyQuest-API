@@ -571,6 +571,11 @@ class LobbyService
                 throw new RuntimeException('Le passage à la manche suivante n\'est pas encore disponible');
             }
 
+            $this->cleanupExpiredSuggestionHolds();
+            if ($this->countActiveSuggestionHolds((int)$round['id']) > 0) {
+                throw new RuntimeException('Une proposition de correction est en cours');
+            }
+
             $this->db->prepare(
                 'UPDATE mq_lobby_players
                  SET is_ready = 1
@@ -678,7 +683,7 @@ class LobbyService
             ]);
 
             $playersCount = $this->countLobbyPlayers($lobbyId);
-            $requiredCount = max(1, (int)ceil($playersCount * 0.5));
+            $requiredCount = max(1, $playersCount);
             $votesCount = $this->countEarlyRevealVotes((int)$round['id']);
             $revealed = false;
 
@@ -823,7 +828,7 @@ class LobbyService
                 $playersCount = $this->countLobbyPlayers($lobbyId);
                 $solvedPlayersCount = $this->countSolvedPlayersForRound((int)$lockedRound['id']);
                 if ($playersCount > 0 && $solvedPlayersCount >= $playersCount) {
-                    $autoRevealed = $this->transitionRoundToReveal($lobbyId, (int)$lockedRound['id'], true, $lockedLobby);
+                    $autoRevealed = $this->transitionRoundToReveal($lobbyId, (int)$lockedRound['id'], false, $lockedLobby);
                 }
             }
 
@@ -917,6 +922,62 @@ class LobbyService
         $this->requireLobbyMember($lobbyId, $userId);
 
         return $this->buildScoreboardSnapshot($lobbyId);
+    }
+
+    public function holdSuggestion(int $userId, int $lobbyId, int $roundId): array
+    {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+        $this->requireLobbyMember($lobbyId, $userId);
+
+        $round = $this->getCurrentRoundRow($lobbyId);
+        if (!$round || (int)$round['id'] !== $roundId) {
+            throw new RuntimeException('Manche introuvable');
+        }
+
+        if (!in_array(strtolower((string)($round['status'] ?? '')), ['running', 'reveal'], true)) {
+            throw new RuntimeException('La manche ne peut plus recevoir de proposition');
+        }
+
+        $this->cleanupExpiredSuggestionHolds();
+        $stmt = $this->db->prepare(
+            'INSERT INTO mq_round_suggestion_holds (lobby_id, round_id, user_id, expires_at)
+             VALUES (:lobby_id, :round_id, :user_id, DATE_ADD(NOW(3), INTERVAL 3 MINUTE))
+             ON DUPLICATE KEY UPDATE expires_at = VALUES(expires_at), updated_at = NOW(3)'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'round_id' => $roundId,
+            'user_id' => $userId,
+        ]);
+
+        return ['round_id' => $roundId, 'holds' => $this->buildSuggestionHoldSnapshot($roundId)];
+    }
+
+    public function releaseSuggestionHold(int $userId, int $lobbyId, int $roundId = 0): array
+    {
+        $this->touchLobbyMember($lobbyId, $userId);
+        $this->cleanupStaleOwnerLobbies();
+        $this->requireLobbyMember($lobbyId, $userId);
+
+        if ($roundId <= 0) {
+            $round = $this->getCurrentRoundRow($lobbyId);
+            $roundId = (int)($round['id'] ?? 0);
+        }
+
+        if ($roundId > 0) {
+            $stmt = $this->db->prepare(
+                'DELETE FROM mq_round_suggestion_holds
+                 WHERE lobby_id = :lobby_id AND round_id = :round_id AND user_id = :user_id'
+            );
+            $stmt->execute([
+                'lobby_id' => $lobbyId,
+                'round_id' => $roundId,
+                'user_id' => $userId,
+            ]);
+        }
+
+        return ['round_id' => $roundId, 'holds' => $roundId > 0 ? $this->buildSuggestionHoldSnapshot($roundId) : []];
     }
 
     public function getLobbyById(int $lobbyId): array
@@ -1881,6 +1942,7 @@ class LobbyService
         $nextVoteAt = $this->getNextVoteAvailableTimestamp($lobby, $round);
         $isAcceptingAnswers = $this->isRoundAnswerWindowOpen($lobby, $round);
         $isRevealVisible = !$isAcceptingAnswers || strtolower((string)($round['status'] ?? '')) === 'reveal';
+        $this->cleanupExpiredSuggestionHolds();
 
         return [
             'server_time_unix' => microtime(true),
@@ -1906,6 +1968,7 @@ class LobbyService
             ],
             'answers' => $answers,
             'early_reveal_votes' => $this->buildEarlyRevealVoteSnapshot((int)$round['id']),
+            'suggestion_holds' => $this->buildSuggestionHoldSnapshot((int)$round['id']),
         ];
     }
 
@@ -1935,6 +1998,39 @@ class LobbyService
         $stmt->execute(['round_id' => $roundId]);
 
         return $this->hydrateAvatarRows($stmt->fetchAll(), 'avatar_url', 'user_id');
+    }
+
+    private function buildSuggestionHoldSnapshot(int $roundId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT h.user_id, u.username, u.avatar_url, h.expires_at
+             FROM mq_round_suggestion_holds h
+             JOIN users u ON u.id = h.user_id
+             WHERE h.round_id = :round_id
+               AND h.expires_at > NOW(3)
+             ORDER BY h.updated_at ASC'
+        );
+        $stmt->execute(['round_id' => $roundId]);
+
+        return $this->hydrateAvatarRows($stmt->fetchAll(), 'avatar_url', 'user_id');
+    }
+
+    private function countActiveSuggestionHolds(int $roundId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) AS c
+             FROM mq_round_suggestion_holds
+             WHERE round_id = :round_id
+               AND expires_at > NOW(3)'
+        );
+        $stmt->execute(['round_id' => $roundId]);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function cleanupExpiredSuggestionHolds(): void
+    {
+        $this->db->exec('DELETE FROM mq_round_suggestion_holds WHERE expires_at <= NOW(3)');
     }
 
     private function buildTrackMediaSelect(string $alias): string

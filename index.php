@@ -18,6 +18,7 @@ require_once __DIR__ . '/middlewares/AuthMiddleware.php';
 require_once __DIR__ . '/middlewares/AdminMiddleware.php';
 require_once __DIR__ . '/controllers/LobbyController.php';
 require_once __DIR__ . '/controllers/CatalogController.php';
+require_once __DIR__ . '/controllers/SuggestionController.php';
 
 $body = get_body();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -27,6 +28,7 @@ header('Content-Type: application/json; charset=utf-8');
 try {
     $lobbyController = new LobbyController();
     $catalogController = new CatalogController();
+    $suggestionController = new SuggestionController();
 
     switch ($method) {
         case 'GET':
@@ -71,6 +73,11 @@ try {
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
                     $catalogController->listPendingTracks();
+                    break;
+                case 'listSuggestions':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $suggestionController->list($_GET);
                     break;
                 default:
                     json_error('Unknown action for GET method', 404);
@@ -143,6 +150,18 @@ try {
                     $userId = AuthMiddleware::check();
                     $lobbyController->submitAnswer($userId, $body);
                     break;
+                case 'holdSuggestion':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->holdSuggestion($userId, $body);
+                    break;
+                case 'releaseSuggestionHold':
+                    $userId = AuthMiddleware::check();
+                    $lobbyController->releaseSuggestionHold($userId, $body);
+                    break;
+                case 'submitSuggestion':
+                    $userId = AuthMiddleware::optional();
+                    $suggestionController->submit($userId, $body);
+                    break;
                 case 'createCategory':
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
@@ -167,6 +186,11 @@ try {
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
                     $catalogController->unvalidateTrack($body);
+                    break;
+                case 'updateSuggestionStatus':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $suggestionController->updateStatus($userId, $body);
                     break;
                 default:
                     json_error('Unknown action for POST method', 404);

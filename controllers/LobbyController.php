@@ -267,6 +267,32 @@ class LobbyController
         json_success(null, $data);
     }
 
+    public function holdSuggestion(int $userId, array $payload): void
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        $roundId = (int)($payload['round_id'] ?? 0);
+        if ($lobbyId <= 0 || $roundId <= 0) {
+            json_error('lobby_id et round_id requis', 400);
+        }
+
+        $data = $this->service->holdSuggestion($userId, $lobbyId, $roundId);
+        $this->publishLobbySnapshot($lobbyId, false);
+        json_success('Proposition en cours', $data);
+    }
+
+    public function releaseSuggestionHold(int $userId, array $payload): void
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        $roundId = (int)($payload['round_id'] ?? 0);
+        if ($lobbyId <= 0) {
+            json_error('lobby_id requis', 400);
+        }
+
+        $data = $this->service->releaseSuggestionHold($userId, $lobbyId, $roundId);
+        $this->publishLobbySnapshot($lobbyId, false);
+        json_success('Proposition terminee', $data);
+    }
+
     public function getScoreboard(int $userId, array $payload): void
     {
         $lobbyId = (int)($payload['lobby_id'] ?? ($_GET['lobby_id'] ?? 0));

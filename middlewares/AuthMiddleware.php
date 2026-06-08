@@ -6,6 +6,27 @@ require_once __DIR__ . '/../services/DatabaseService.php';
 
 class AuthMiddleware
 {
+    public static function optional(): ?int
+    {
+        $sid = get_session_id();
+        if (!$sid) {
+            return null;
+        }
+
+        $db = DatabaseService::getInstance();
+        $stmt = $db->prepare(
+            'SELECT s.user_id
+             FROM auth_sessions s
+             WHERE s.id = :sid
+               AND s.expires_at > NOW()
+             LIMIT 1'
+        );
+        $stmt->execute(['sid' => $sid]);
+        $row = $stmt->fetch();
+
+        return $row && !empty($row['user_id']) ? (int)$row['user_id'] : null;
+    }
+
     public static function check(): int
     {
         $sid = get_session_id();
