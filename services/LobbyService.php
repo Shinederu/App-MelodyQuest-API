@@ -43,6 +43,9 @@ class LobbyService
 
         $showTrackCategory = $this->normalizeBoolean($payload['show_track_category'] ?? false);
         $allowEarlyRevealVote = $this->normalizeBoolean($payload['allow_early_reveal_vote'] ?? true);
+        $answerSimilarityThreshold = $this->validateAnswerSimilarityThreshold(
+            $payload['answer_similarity_threshold'] ?? MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD
+        );
 
         $selectedCategoryIds = array_key_exists('selected_category_ids', $payload)
             ? $this->normalizeCategoryIds($payload['selected_category_ids'])
@@ -54,8 +57,8 @@ class LobbyService
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO mq_lobbies
-                (lobby_code, name, owner_user_id, status, visibility, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote)
-                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote)'
+                (lobby_code, name, owner_user_id, status, visibility, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold)
+                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold)'
             );
             $stmt->execute([
                 'code' => $code,
@@ -70,6 +73,7 @@ class LobbyService
                 'selected_category_ids' => $this->encodeCategoryIds($selectedCategoryIds),
                 'show_track_category' => $showTrackCategory,
                 'allow_early_reveal_vote' => $allowEarlyRevealVote,
+                'answer_similarity_threshold' => $answerSimilarityThreshold,
             ]);
 
             $lobbyId = (int)$this->db->lastInsertId();
@@ -359,6 +363,10 @@ class LobbyService
         if (array_key_exists('allow_early_reveal_vote', $payload)) {
             $fields[] = 'allow_early_reveal_vote = :allow_early_reveal_vote';
             $params['allow_early_reveal_vote'] = $this->normalizeBoolean($payload['allow_early_reveal_vote']);
+        }
+        if (array_key_exists('answer_similarity_threshold', $payload)) {
+            $fields[] = 'answer_similarity_threshold = :answer_similarity_threshold';
+            $params['answer_similarity_threshold'] = $this->validateAnswerSimilarityThreshold($payload['answer_similarity_threshold']);
         }
 
         if (!empty($fields)) {
@@ -730,13 +738,14 @@ class LobbyService
         $isCorrectTitle = 0;
         $isCorrectArtist = 0;
         $mode = (string)$lobby['guess_mode'];
+        $answerSimilarityThreshold = $this->getAnswerSimilarityThreshold($lobby);
         $titleVariants = $this->getExpectedTitleVariants((int)$track['family_id'], (string)$track['family_name']);
 
         if ($mode === 'title' || $mode === 'both') {
-            $isCorrectTitle = $this->isGuessCorrectAgainstVariants($guessTitle, $titleVariants) ? 1 : 0;
+            $isCorrectTitle = $this->isGuessCorrectAgainstVariants($guessTitle, $titleVariants, $answerSimilarityThreshold) ? 1 : 0;
         }
         if ($mode === 'artist' || $mode === 'both') {
-            $isCorrectArtist = $this->isGuessCorrect($guessArtist, (string)$track['artist']) ? 1 : 0;
+            $isCorrectArtist = $this->isGuessCorrect($guessArtist, (string)$track['artist'], $answerSimilarityThreshold) ? 1 : 0;
         }
 
         $prevStmt = $this->db->prepare(
@@ -832,6 +841,7 @@ class LobbyService
             'is_correct_title' => (bool)$isCorrectTitle,
             'is_correct_artist' => (bool)$isCorrectArtist,
             'auto_revealed' => $autoRevealed,
+            'answer_similarity_threshold' => $answerSimilarityThreshold,
         ];
     }
 
@@ -1592,6 +1602,33 @@ class LobbyService
         return $value;
     }
 
+    private function validateAnswerSimilarityThreshold($raw): int
+    {
+        if (!is_numeric($raw)) {
+            throw new RuntimeException('Le seuil de validation doit etre un pourcentage valide');
+        }
+
+        $value = (int)$raw;
+        if ($value < MQ_MIN_ANSWER_SIMILARITY_THRESHOLD || $value > MQ_MAX_ANSWER_SIMILARITY_THRESHOLD) {
+            throw new RuntimeException(
+                sprintf(
+                    'Le seuil de validation doit etre compris entre %d%% et %d%%',
+                    MQ_MIN_ANSWER_SIMILARITY_THRESHOLD,
+                    MQ_MAX_ANSWER_SIMILARITY_THRESHOLD
+                )
+            );
+        }
+
+        return $value;
+    }
+
+    private function getAnswerSimilarityThreshold(array $lobby): int
+    {
+        return $this->validateAnswerSimilarityThreshold(
+            $lobby['answer_similarity_threshold'] ?? MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD
+        );
+    }
+
     private function assertLobbyCanStart(array $lobby): array
     {
         $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
@@ -2003,7 +2040,7 @@ class LobbyService
         return $this->youtubeUrlColumnExists;
     }
 
-    private function isGuessCorrectAgainstVariants(string $guess, array $expectedValues): bool
+    private function isGuessCorrectAgainstVariants(string $guess, array $expectedValues, int $threshold = 100): bool
     {
         $normalizedGuess = $this->normalize($guess);
         if ($normalizedGuess === '') {
@@ -2011,7 +2048,7 @@ class LobbyService
         }
 
         foreach ($expectedValues as $expectedValue) {
-            if ($normalizedGuess === $this->normalize((string)$expectedValue)) {
+            if ($this->isNormalizedGuessAccepted($normalizedGuess, $this->normalize((string)$expectedValue), $threshold)) {
                 return true;
             }
         }
@@ -2019,11 +2056,146 @@ class LobbyService
         return false;
     }
 
-    private function isGuessCorrect(string $guess, string $expected): bool
+    private function isGuessCorrect(string $guess, string $expected, int $threshold = 100): bool
     {
         $g = $this->normalize($guess);
         $e = $this->normalize($expected);
-        return $g !== '' && $e !== '' && $g === $e;
+        return $this->isNormalizedGuessAccepted($g, $e, $threshold);
+    }
+
+    private function isNormalizedGuessAccepted(string $normalizedGuess, string $normalizedExpected, int $threshold): bool
+    {
+        if ($normalizedGuess === '' || $normalizedExpected === '') {
+            return false;
+        }
+
+        if ($normalizedGuess === $normalizedExpected) {
+            return true;
+        }
+
+        if ($threshold >= MQ_MAX_ANSWER_SIMILARITY_THRESHOLD) {
+            return false;
+        }
+
+        $guessLength = strlen($normalizedGuess);
+        $expectedLength = strlen($normalizedExpected);
+        $maxLength = max($guessLength, $expectedLength);
+        if ($maxLength === 0) {
+            return false;
+        }
+
+        $lengthRatio = min($guessLength, $expectedLength) / $maxLength;
+        if ($lengthRatio < 0.65) {
+            return false;
+        }
+
+        $effectiveThreshold = $this->getEffectiveAnswerThreshold($threshold, $expectedLength);
+        return $this->calculateAnswerSimilarityPercent($normalizedGuess, $normalizedExpected) >= $effectiveThreshold;
+    }
+
+    private function getEffectiveAnswerThreshold(int $requestedThreshold, int $expectedLength): int
+    {
+        if ($expectedLength <= 4) {
+            return MQ_MAX_ANSWER_SIMILARITY_THRESHOLD;
+        }
+
+        if ($expectedLength <= 7) {
+            return max($requestedThreshold, 94);
+        }
+
+        if ($expectedLength <= 10) {
+            return max($requestedThreshold, 90);
+        }
+
+        return $requestedThreshold;
+    }
+
+    private function calculateAnswerSimilarityPercent(string $guess, string $expected): float
+    {
+        $maxLength = max(strlen($guess), strlen($expected));
+        if ($maxLength === 0) {
+            return 0.0;
+        }
+
+        $levenshteinDistance = levenshtein($guess, $expected);
+        $levenshteinScore = max(0.0, (1 - ($levenshteinDistance / $maxLength)) * 100);
+
+        similar_text($guess, $expected, $similarTextScore);
+        $jaroWinklerScore = $this->calculateJaroWinklerSimilarity($guess, $expected) * 100;
+
+        return max($levenshteinScore, (float)$similarTextScore, $jaroWinklerScore);
+    }
+
+    private function calculateJaroWinklerSimilarity(string $source, string $target): float
+    {
+        if ($source === $target) {
+            return 1.0;
+        }
+
+        $sourceLength = strlen($source);
+        $targetLength = strlen($target);
+        if ($sourceLength === 0 || $targetLength === 0) {
+            return 0.0;
+        }
+
+        $matchDistance = max(0, intdiv(max($sourceLength, $targetLength), 2) - 1);
+        $sourceMatches = array_fill(0, $sourceLength, false);
+        $targetMatches = array_fill(0, $targetLength, false);
+        $matches = 0;
+
+        for ($i = 0; $i < $sourceLength; $i++) {
+            $start = max(0, $i - $matchDistance);
+            $end = min($i + $matchDistance + 1, $targetLength);
+
+            for ($j = $start; $j < $end; $j++) {
+                if ($targetMatches[$j] || $source[$i] !== $target[$j]) {
+                    continue;
+                }
+
+                $sourceMatches[$i] = true;
+                $targetMatches[$j] = true;
+                $matches++;
+                break;
+            }
+        }
+
+        if ($matches === 0) {
+            return 0.0;
+        }
+
+        $transpositions = 0;
+        $targetIndex = 0;
+        for ($i = 0; $i < $sourceLength; $i++) {
+            if (!$sourceMatches[$i]) {
+                continue;
+            }
+
+            while ($targetIndex < $targetLength && !$targetMatches[$targetIndex]) {
+                $targetIndex++;
+            }
+
+            if ($targetIndex < $targetLength && $source[$i] !== $target[$targetIndex]) {
+                $transpositions++;
+            }
+            $targetIndex++;
+        }
+
+        $jaro = (
+            ($matches / $sourceLength)
+            + ($matches / $targetLength)
+            + (($matches - ($transpositions / 2)) / $matches)
+        ) / 3;
+
+        $prefixLength = 0;
+        $maxPrefix = min(4, $sourceLength, $targetLength);
+        for ($i = 0; $i < $maxPrefix; $i++) {
+            if ($source[$i] !== $target[$i]) {
+                break;
+            }
+            $prefixLength++;
+        }
+
+        return $jaro + ($prefixLength * 0.1 * (1 - $jaro));
     }
 
     private function normalize(string $value): string

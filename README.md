@@ -28,11 +28,13 @@ Migration:
 - `sql/005_melodyquest_track_video_id_only.sql`
 - `sql/006_melodyquest_merge_duplicate_categories.sql`
 - `sql/007_melodyquest_game_options.sql`
+- `sql/008_melodyquest_answer_similarity.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
 La migration `006` fusionne les categories dupliquees vers les categories canoniques (`animes` -> `anime`, `musiques` -> `musique`, `jeux-video` -> `jeux`) et normalise les selections de categories stockees dans les lobbies.
 La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lobbies.allow_early_reveal_vote`, ainsi que la table `mq_round_reveal_votes` pour le vote de revelation anticipee.
+La migration `008` ajoute `mq_lobbies.answer_similarity_threshold`, seuil de correspondance entre `70` et `100`, avec `100` comme comportement strict historique.
 
 ## Import catalogue CSV
 
@@ -85,9 +87,10 @@ Authentifie:
 - `GET action=listFamilies&category_id=...` (optionnel)
 - `GET action=listTracks&family_id=...` (optionnel)
 
-`updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category` et `allow_early_reveal_vote`.
+`updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve.
 `getRoundState` renvoie `round.track.category_id`, `round.track.category_name` et `early_reveal_votes` pour l'interface de jeu.
+`submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
 
 Flux temps reel:
 
@@ -125,6 +128,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
   - `MERCURE_SUBSCRIBER_JWT_KEY`
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
+- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
   - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure
