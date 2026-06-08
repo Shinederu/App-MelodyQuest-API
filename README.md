@@ -13,7 +13,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
 - Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
-- Administration musicale reservee aux admins (flag admin modifie manuellement en DB)
+- Administration musicale reservee au droit central `melodyquest.catalog.manage` ou au super-admin global; `users.role='admin'` reste seulement un fallback de transition.
 
 ## Base de donnees
 
@@ -22,12 +22,16 @@ Le schema MelodyQuest est installe dans `ShinedeCore` avec des tables prefixees 
 Migration:
 
 - `sql/001_melodyquest_core.sql`
+- `sql/002_melodyquest_lobby_settings.sql`
 - `sql/003_melodyquest_family_aliases.sql`
 - `sql/004_melodyquest_track_validation.sql`
 - `sql/005_melodyquest_track_video_id_only.sql`
+- `sql/006_melodyquest_merge_duplicate_categories.sql`
 - `sql/007_melodyquest_game_options.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
+La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
+La migration `006` fusionne les categories dupliquees vers les categories canoniques (`animes` -> `anime`, `musiques` -> `musique`, `jeux-video` -> `jeux`) et normalise les selections de categories stockees dans les lobbies.
 La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lobbies.allow_early_reveal_vote`, ainsi que la table `mq_round_reveal_votes` pour le vote de revelation anticipee.
 
 ## Import catalogue CSV
