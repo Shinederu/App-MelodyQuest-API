@@ -19,6 +19,7 @@ require_once __DIR__ . '/middlewares/AdminMiddleware.php';
 require_once __DIR__ . '/controllers/LobbyController.php';
 require_once __DIR__ . '/controllers/CatalogController.php';
 require_once __DIR__ . '/controllers/SuggestionController.php';
+require_once __DIR__ . '/controllers/TvController.php';
 
 $body = get_body();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -29,6 +30,7 @@ try {
     $lobbyController = new LobbyController();
     $catalogController = new CatalogController();
     $suggestionController = new SuggestionController();
+    $tvController = new TvController();
 
     switch ($method) {
         case 'GET':
@@ -78,6 +80,12 @@ try {
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
                     $suggestionController->list($_GET);
+                    break;
+                case 'getTvPairing':
+                    $tvController->getPairing($_GET);
+                    break;
+                case 'getTvState':
+                    $tvController->getState($_GET);
                     break;
                 default:
                     json_error('Unknown action for GET method', 404);
@@ -161,6 +169,13 @@ try {
                 case 'submitSuggestion':
                     $userId = AuthMiddleware::optional();
                     $suggestionController->submit($userId, $body);
+                    break;
+                case 'createTvPairing':
+                    $tvController->createPairing();
+                    break;
+                case 'linkTvPairing':
+                    $userId = AuthMiddleware::check();
+                    $tvController->linkPairing($userId, $body);
                     break;
                 case 'createCategory':
                     $userId = AuthMiddleware::check();

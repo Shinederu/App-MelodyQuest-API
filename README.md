@@ -30,6 +30,7 @@ Migration:
 - `sql/007_melodyquest_game_options.sql`
 - `sql/008_melodyquest_answer_similarity.sql`
 - `sql/009_melodyquest_player_suggestions.sql`
+- `sql/010_melodyquest_tv_pairings.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -37,6 +38,7 @@ La migration `006` fusionne les categories dupliquees vers les categories canoni
 La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lobbies.allow_early_reveal_vote`, ainsi que la table `mq_round_reveal_votes` pour le vote de revelation anticipee.
 La migration `008` ajoute `mq_lobbies.answer_similarity_threshold`, seuil de correspondance entre `70` et `100`, avec `100` comme comportement strict historique.
 La migration `009` ajoute `mq_player_suggestions` pour les corrections/alias/nouvelles musiques proposes par les joueurs et `mq_round_suggestion_holds` pour bloquer temporairement le passage a la manche suivante pendant qu'un joueur remplit une proposition.
+La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre une television/ecran dedie et un salon MelodyQuest. Le code TV expire rapidement tant qu'il est en attente, puis la liaison est prolongee pendant que la TV synchronise le salon.
 
 ## Import catalogue CSV
 
@@ -85,6 +87,7 @@ Authentifie:
 - `POST action=holdSuggestion`
 - `POST action=releaseSuggestionHold`
 - `POST action=submitSuggestion`
+- `POST action=linkTvPairing`
 - `GET action=getRoundState&lobby_id=...`
 - `GET action=getScoreboard&lobby_id=...`
 - `GET action=listPublicLobbies`
@@ -98,6 +101,13 @@ Authentifie:
 `submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video.
 `getRoundState` renvoie `round.track.category_id`, `round.track.category_name`, `early_reveal_votes` et `suggestion_holds` pour l'interface de jeu.
 `submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
+`linkTvPairing` lie un code TV en attente au salon de l'utilisateur connecte; l'utilisateur doit deja etre membre du salon.
+
+Mode TV public:
+
+- `POST action=createTvPairing`: cree un code court et un `device_token` pour l'ecran TV
+- `GET action=getTvPairing&device_token=...`: permet a la TV de savoir si son code est encore en attente ou lie
+- `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur
 
 Flux temps reel:
 
