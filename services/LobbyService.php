@@ -451,36 +451,28 @@ class LobbyService
             throw new RuntimeException('Toutes les manches de ce lobby ont déjà été jouées');
         }
 
-        $trackId = isset($payload['track_id']) ? (int)$payload['track_id'] : 0;
-        if ($trackId <= 0) {
-            $trackId = $this->pickTrackForLobby($lobbyId);
-        } else {
-            $trackCheck = $this->db->prepare(
-                'SELECT id FROM mq_tracks
-                 WHERE id = :id
-                   AND is_active = 1
-                   AND is_validated = 1
-                   AND (
-                     EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :lobby_id AND p.track_id = :id)
-                     OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :lobby_id)
-                   )
-                 LIMIT 1'
-            );
-            $trackCheck->execute(['id' => $trackId, 'lobby_id' => $lobbyId]);
-            if (!$trackCheck->fetch()) {
-                throw new RuntimeException('Track invalide pour ce lobby ou non validee');
-            }
-        }
-
-        $roundNumberStmt = $this->db->prepare(
-            'SELECT COALESCE(MAX(round_number), 0) + 1 AS next_round FROM mq_rounds WHERE lobby_id = :lobby_id'
-        );
-        $roundNumberStmt->execute(['lobby_id' => $lobbyId]);
-        $roundNumber = (int)$roundNumberStmt->fetch()['next_round'];
+        $requestedTrackId = isset($payload['track_id']) ? (int)$payload['track_id'] : 0;
 
         $this->db->beginTransaction();
         try {
+            $roundNumberStmt = $this->db->prepare(
+                'SELECT COALESCE(MAX(round_number), 0) + 1 AS next_round FROM mq_rounds WHERE lobby_id = :lobby_id'
+            );
+            $roundNumberStmt->execute(['lobby_id' => $lobbyId]);
+            $roundNumber = (int)$roundNumberStmt->fetch()['next_round'];
+
+            if ($requestedTrackId > 0) {
+                if (!$this->isTrackPlayableForLobby($lobbyId, $requestedTrackId)) {
+                    throw new RuntimeException('Track invalide pour ce lobby ou non validee');
+                }
+                $trackId = $requestedTrackId;
+                $this->clearRoundPreload($lobbyId, $roundNumber);
+            } else {
+                $trackId = $this->consumeRoundPreloadLocked($lobbyId, $roundNumber) ?? $this->pickTrackForLobby($lobbyId);
+            }
+
             $this->createRunningRoundLocked($lobbyId, $trackId, $roundNumber);
+            $this->ensureRoundPreloadLocked($lobbyId, $roundNumber + 1, $targetRounds);
 
             $this->db->commit();
         } catch (Throwable $e) {
@@ -622,7 +614,9 @@ class LobbyService
                     $finishedGame = true;
                 } else {
                     $nextRoundNumber = (int)$round['round_number'] + 1;
-                    $this->createRunningRoundLocked($lobbyId, $this->pickTrackForLobby($lobbyId), $nextRoundNumber);
+                    $nextTrackId = $this->consumeRoundPreloadLocked($lobbyId, $nextRoundNumber) ?? $this->pickTrackForLobby($lobbyId);
+                    $this->createRunningRoundLocked($lobbyId, $nextTrackId, $nextRoundNumber);
+                    $this->ensureRoundPreloadLocked($lobbyId, $nextRoundNumber + 1, $totalRounds);
                 }
 
                 $advanced = true;
@@ -1332,17 +1326,17 @@ class LobbyService
         $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
         $usedFamilyIds = $this->getPlayedFamilyIds($lobbyId);
 
-        $trackId = $this->pickEligibleTrack($selectedCategoryIds, $usedTrackIds, $usedFamilyIds);
+        $trackId = $this->pickEligibleTrack($lobbyId, $selectedCategoryIds, $usedTrackIds, $usedFamilyIds);
         if ($trackId !== null) {
             return $trackId;
         }
 
-        $trackId = $this->pickEligibleTrack($selectedCategoryIds, $usedTrackIds, []);
+        $trackId = $this->pickEligibleTrack($lobbyId, $selectedCategoryIds, $usedTrackIds, []);
         if ($trackId !== null) {
             return $trackId;
         }
 
-        $trackId = $this->pickEligibleTrack($selectedCategoryIds, [], []);
+        $trackId = $this->pickEligibleTrack($lobbyId, $selectedCategoryIds, [], []);
         if ($trackId !== null) {
             return $trackId;
         }
@@ -1371,10 +1365,13 @@ class LobbyService
         return array_values(array_filter(array_map('intval', array_column($stmt->fetchAll(), 'family_id'))));
     }
 
-    private function pickEligibleTrack(array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
+    private function pickEligibleTrack(int $lobbyId, array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
     {
         $where = ['t.is_active = 1', 't.is_validated = 1'];
-        $params = [];
+        $params = [
+            'pool_lobby_id_exists' => $lobbyId,
+            'pool_lobby_id_empty' => $lobbyId,
+        ];
 
         if (!empty($selectedCategoryIds)) {
             $categoryPlaceholders = [];
@@ -1405,6 +1402,11 @@ class LobbyService
             }
             $where[] = 't.family_id NOT IN (' . implode(', ', $familyPlaceholders) . ')';
         }
+
+        $where[] = '(
+            EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = t.id)
+            OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
+        )';
 
         $sql = 'SELECT t.id
                 FROM mq_tracks t
@@ -1488,6 +1490,132 @@ class LobbyService
              WHERE lobby_id = :lobby_id'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
+    }
+
+    private function isTrackPlayableForLobby(int $lobbyId, int $trackId): bool
+    {
+        if ($trackId <= 0) {
+            return false;
+        }
+
+        $lobby = $this->requireLobby($lobbyId);
+        $selectedCategoryIds = $this->decodeCategoryIds($lobby['selected_category_ids'] ?? null);
+        if (empty($selectedCategoryIds)) {
+            return false;
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT t.id, f.category_id
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             WHERE t.id = :track_id
+               AND t.is_active = 1
+               AND t.is_validated = 1
+               AND (
+                 EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = :pool_track_id)
+                 OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
+               )
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'track_id' => $trackId,
+            'pool_track_id' => $trackId,
+            'pool_lobby_id_exists' => $lobbyId,
+            'pool_lobby_id_empty' => $lobbyId,
+        ]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            return false;
+        }
+
+        return in_array((int)$row['category_id'], $selectedCategoryIds, true);
+    }
+
+    private function consumeRoundPreloadLocked(int $lobbyId, int $roundNumber): ?int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT track_id
+             FROM mq_round_preloads
+             WHERE lobby_id = :lobby_id
+               AND round_number = :round_number
+             LIMIT 1
+             FOR UPDATE'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'round_number' => $roundNumber,
+        ]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            return null;
+        }
+
+        $trackId = (int)$row['track_id'];
+        $this->clearRoundPreload($lobbyId, $roundNumber);
+
+        return $this->isTrackPlayableForLobby($lobbyId, $trackId) ? $trackId : null;
+    }
+
+    private function ensureRoundPreloadLocked(int $lobbyId, int $roundNumber, int $totalRounds): void
+    {
+        if ($roundNumber <= 0 || $roundNumber > $totalRounds) {
+            $this->clearRoundPreload($lobbyId, $roundNumber);
+            return;
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT track_id
+             FROM mq_round_preloads
+             WHERE lobby_id = :lobby_id
+               AND round_number = :round_number
+             LIMIT 1
+             FOR UPDATE'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'round_number' => $roundNumber,
+        ]);
+        $existing = $stmt->fetch();
+        if ($existing && $this->isTrackPlayableForLobby($lobbyId, (int)$existing['track_id'])) {
+            return;
+        }
+        if ($existing) {
+            $this->clearRoundPreload($lobbyId, $roundNumber);
+        }
+
+        try {
+            $trackId = $this->pickTrackForLobby($lobbyId);
+        } catch (RuntimeException) {
+            return;
+        }
+
+        $insert = $this->db->prepare(
+            'INSERT INTO mq_round_preloads (lobby_id, round_number, track_id, created_at)
+             VALUES (:lobby_id, :round_number, :track_id, NOW(3))
+             ON DUPLICATE KEY UPDATE track_id = VALUES(track_id), created_at = VALUES(created_at)'
+        );
+        $insert->execute([
+            'lobby_id' => $lobbyId,
+            'round_number' => $roundNumber,
+            'track_id' => $trackId,
+        ]);
+    }
+
+    private function clearRoundPreload(int $lobbyId, int $roundNumber): void
+    {
+        if ($roundNumber <= 0) {
+            return;
+        }
+
+        $stmt = $this->db->prepare(
+            'DELETE FROM mq_round_preloads
+             WHERE lobby_id = :lobby_id
+               AND round_number = :round_number'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'round_number' => $roundNumber,
+        ]);
     }
 
     private function createRunningRoundLocked(int $lobbyId, int $trackId, int $roundNumber): void
@@ -1942,18 +2070,9 @@ class LobbyService
             return ['round' => null, 'answers' => []];
         }
 
-        $mediaSelect = $this->buildTrackMediaSelect('t');
-        $trackStmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, ' . $mediaSelect . ', f.id AS family_id, f.name AS family_name, c.id AS category_id, c.name AS category_name
-             FROM mq_tracks t
-             JOIN mq_families f ON f.id = t.family_id
-             JOIN mq_categories c ON c.id = f.category_id
-             WHERE t.id = :id
-             LIMIT 1'
-        );
-        $trackStmt->execute(['id' => $round['track_id']]);
-        $track = $trackStmt->fetch();
-        $track = $track ? $this->hydrateTrackRow($track) : null;
+        $track = $this->getTrackSnapshotById((int)$round['track_id']);
+        $nextRoundNumber = (int)$round['round_number'] + 1;
+        $nextTrack = $this->buildRoundPreloadTrackSnapshot($lobbyId, $nextRoundNumber, $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS));
 
         $answersStmt = $this->db->prepare(
             'SELECT a.user_id, u.username, a.guess_title, a.guess_artist, a.is_correct_title, a.is_correct_artist, a.score_awarded, a.answered_at
@@ -1997,10 +2116,63 @@ class LobbyService
                 'is_reveal_visible' => $isRevealVisible,
                 'track' => $track ?: null,
             ],
+            'next_round_number' => $nextTrack ? $nextRoundNumber : null,
+            'next_track' => $nextTrack,
             'answers' => $answers,
             'early_reveal_votes' => $this->buildEarlyRevealVoteSnapshot((int)$round['id']),
             'suggestion_holds' => $this->buildSuggestionHoldSnapshot((int)$round['id']),
         ];
+    }
+
+    private function buildRoundPreloadTrackSnapshot(int $lobbyId, int $roundNumber, int $totalRounds): ?array
+    {
+        if ($roundNumber <= 0 || $roundNumber > $totalRounds) {
+            return null;
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT track_id
+             FROM mq_round_preloads
+             WHERE lobby_id = :lobby_id
+               AND round_number = :round_number
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'round_number' => $roundNumber,
+        ]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            return null;
+        }
+
+        $trackId = (int)$row['track_id'];
+        if (!$this->isTrackPlayableForLobby($lobbyId, $trackId)) {
+            return null;
+        }
+
+        return $this->getTrackSnapshotById($trackId);
+    }
+
+    private function getTrackSnapshotById(int $trackId): ?array
+    {
+        if ($trackId <= 0) {
+            return null;
+        }
+
+        $mediaSelect = $this->buildTrackMediaSelect('t');
+        $trackStmt = $this->db->prepare(
+            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, ' . $mediaSelect . ', f.id AS family_id, f.name AS family_name, c.id AS category_id, c.name AS category_name
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             JOIN mq_categories c ON c.id = f.category_id
+             WHERE t.id = :id
+             LIMIT 1'
+        );
+        $trackStmt->execute(['id' => $trackId]);
+        $track = $trackStmt->fetch();
+
+        return $track ? $this->hydrateTrackRow($track) : null;
     }
 
     private function buildScoreboardSnapshot(int $lobbyId): array
