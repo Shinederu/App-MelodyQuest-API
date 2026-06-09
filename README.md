@@ -12,6 +12,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Validation manuelle des nouvelles musiques avant usage en partie
 - Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
+- Creation des manches avec une courte avance serveur (`MQ_ROUND_PRELOAD_SECONDS`) pour laisser les clients et les TV precharger YouTube avant le vrai depart.
 - Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
 - Administration musicale reservee au droit central `melodyquest.catalog.manage` ou au super-admin global; `users.role='admin'` reste seulement un fallback de transition.
 
@@ -99,7 +100,7 @@ Authentifie:
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs presents.
 `holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu. `voteNextRound` refuse d'avancer tant qu'un verrou actif existe.
 `submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video.
-`getRoundState` renvoie `round.track.category_id`, `round.track.category_name`, `early_reveal_votes` et `suggestion_holds` pour l'interface de jeu.
+`getRoundState` renvoie `round.track.category_id`, `round.track.category_name`, `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `early_reveal_votes` et `suggestion_holds` pour l'interface de jeu.
 `submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
 `linkTvPairing` lie un code TV en attente au salon de l'utilisateur connecte; l'utilisateur doit deja etre membre du salon.
 
@@ -148,6 +149,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
+- `MQ_ROUND_PRELOAD_SECONDS` permet de definir l'avance de depart des nouvelles manches pour precharger les lecteurs; valeur par defaut: `4`, bornee entre `0` et `10`.
   - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure

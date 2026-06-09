@@ -506,6 +506,10 @@ class LobbyService
             throw new RuntimeException('Aucune manche en cours');
         }
 
+        if ($this->isRoundWaitingToStart($round)) {
+            throw new RuntimeException('La manche n\'a pas encore commencé');
+        }
+
         $this->transitionRoundToReveal($lobbyId, (int)$round['id']);
 
         return $this->getRoundState($userId, $lobbyId);
@@ -665,6 +669,10 @@ class LobbyService
                 throw new RuntimeException('La réponse est déjà révélée');
             }
 
+            if ($this->isRoundWaitingToStart($round)) {
+                throw new RuntimeException('La manche n\'a pas encore commencé');
+            }
+
             if (!$this->isRoundAnswerWindowOpen($lobby, $round)) {
                 throw new RuntimeException('Le chrono est déjà terminé');
             }
@@ -718,6 +726,10 @@ class LobbyService
         $round = $this->getCurrentRoundRow($lobbyId);
         if (!$round) {
             throw new RuntimeException('Aucune manche en cours');
+        }
+
+        if ($this->isRoundWaitingToStart($round)) {
+            throw new RuntimeException('La manche n\'a pas encore commencé');
         }
 
         if (!$this->isRoundAnswerWindowOpen($lobby, $round)) {
@@ -783,6 +795,10 @@ class LobbyService
             $lockedRound = $this->getCurrentRoundRowForUpdate($lobbyId);
             if (!$lockedRound || (int)($lockedRound['id'] ?? 0) !== (int)$round['id']) {
                 throw new RuntimeException('La manche a change, reessaie');
+            }
+
+            if ($this->isRoundWaitingToStart($lockedRound)) {
+                throw new RuntimeException('La manche n\'a pas encore commencé');
             }
 
             if (!$this->isRoundAnswerWindowOpen($lockedLobby, $lockedRound)) {
@@ -1476,9 +1492,10 @@ class LobbyService
 
     private function createRunningRoundLocked(int $lobbyId, int $trackId, int $roundNumber): void
     {
+        $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . MQ_ROUND_PRELOAD_SECONDS . ' SECOND)';
         $insert = $this->db->prepare(
             'INSERT INTO mq_rounds (lobby_id, round_number, track_id, started_at, status)
-             VALUES (:lobby_id, :round_number, :track_id, NOW(3), "running")'
+             VALUES (:lobby_id, :round_number, :track_id, ' . $startExpression . ', "running")'
         );
         $insert->execute([
             'lobby_id' => $lobbyId,
@@ -1491,7 +1508,7 @@ class LobbyService
              SET status = "playing",
                  current_track_id = :track_id,
                  playback_state = "playing",
-                 playback_started_at = NOW(3),
+                 playback_started_at = ' . $startExpression . ',
                  playback_offset_seconds = 0,
                  sync_revision = sync_revision + 1
              WHERE id = :id'
@@ -1548,7 +1565,17 @@ class LobbyService
             return false;
         }
 
-        return microtime(true) < $this->getAnswerDeadlineTimestamp($lobby, $round);
+        $now = microtime(true);
+
+        return $now >= $this->resolveRoundTimestamp($round, 'started_at')
+            && $now < $this->getAnswerDeadlineTimestamp($lobby, $round);
+    }
+
+    private function isRoundWaitingToStart(array $round): bool
+    {
+        $startedAt = $this->resolveRoundTimestamp($round, 'started_at');
+
+        return $startedAt > 0 && microtime(true) < $startedAt;
     }
 
     private function isNextVoteWindowOpen(array $lobby, array $round): bool
@@ -1941,7 +1968,8 @@ class LobbyService
         $answerDeadline = $this->getAnswerDeadlineTimestamp($lobby, $round);
         $nextVoteAt = $this->getNextVoteAvailableTimestamp($lobby, $round);
         $isAcceptingAnswers = $this->isRoundAnswerWindowOpen($lobby, $round);
-        $isRevealVisible = !$isAcceptingAnswers || strtolower((string)($round['status'] ?? '')) === 'reveal';
+        $isWaitingToStart = $this->isRoundWaitingToStart($round);
+        $isRevealVisible = (!$isWaitingToStart && !$isAcceptingAnswers) || strtolower((string)($round['status'] ?? '')) === 'reveal';
         $this->cleanupExpiredSuggestionHolds();
 
         return [
@@ -1961,8 +1989,11 @@ class LobbyService
                 'answer_deadline_unix' => $answerDeadline,
                 'next_vote_available_at' => gmdate('c', (int)$nextVoteAt),
                 'next_vote_available_unix' => $nextVoteAt,
+                'preload_seconds' => MQ_ROUND_PRELOAD_SECONDS,
                 'reveal_delay_seconds' => $this->getRevealDelaySeconds($lobby),
                 'is_accepting_answers' => $isAcceptingAnswers,
+                'is_waiting_to_start' => $isWaitingToStart,
+                'starts_in_seconds' => max(0.0, $this->resolveRoundTimestamp($round, 'started_at') - microtime(true)),
                 'is_reveal_visible' => $isRevealVisible,
                 'track' => $track ?: null,
             ],
