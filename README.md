@@ -151,7 +151,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
-- `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `1`, bornee entre `0` et `10`. Le vrai prechargement repose sur `mq_round_preloads` et le champ `next_track`.
+- `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`. Cette marge laisse notamment le mode TV prechauffer la video courante en muet avant de liberer le son. Le prechargement de la piste suivante repose sur `mq_round_preloads` et le champ `next_track`.
   - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure
