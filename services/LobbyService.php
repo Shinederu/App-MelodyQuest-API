@@ -1323,20 +1323,21 @@ class LobbyService
             throw new RuntimeException('Sélectionne au moins une catégorie avant de lancer la partie');
         }
 
+        $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
         $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
         $usedFamilyIds = $this->getPlayedFamilyIds($lobbyId);
 
-        $trackId = $this->pickEligibleTrack($lobbyId, $selectedCategoryIds, $usedTrackIds, $usedFamilyIds);
+        $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, $usedTrackIds, $usedFamilyIds);
         if ($trackId !== null) {
             return $trackId;
         }
 
-        $trackId = $this->pickEligibleTrack($lobbyId, $selectedCategoryIds, $usedTrackIds, []);
+        $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, $usedTrackIds, []);
         if ($trackId !== null) {
             return $trackId;
         }
 
-        $trackId = $this->pickEligibleTrack($lobbyId, $selectedCategoryIds, [], []);
+        $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, [], []);
         if ($trackId !== null) {
             return $trackId;
         }
@@ -1365,9 +1366,212 @@ class LobbyService
         return array_values(array_filter(array_map('intval', array_column($stmt->fetchAll(), 'family_id'))));
     }
 
+    private function pickBalancedEligibleTrack(
+        int $lobbyId,
+        array $selectedCategoryIds,
+        int $totalRounds,
+        array $excludedTrackIds,
+        array $excludedFamilyIds = []
+    ): ?int {
+        $availableByCategory = $this->getPlayableTrackCountsByCategory($lobbyId, $selectedCategoryIds);
+        $quotas = $this->calculateBalancedCategoryQuotas($availableByCategory, $totalRounds, $lobbyId);
+        $scheduledCounts = $this->getScheduledCategoryCounts($lobbyId);
+        $orderedCategoryIds = $this->orderCategoriesForNextPick($selectedCategoryIds, $availableByCategory, $quotas, $scheduledCounts, $lobbyId);
+
+        foreach ($orderedCategoryIds as $categoryId) {
+            $trackId = $this->pickEligibleTrack($lobbyId, [$categoryId], $excludedTrackIds, $excludedFamilyIds);
+            if ($trackId !== null) {
+                return $trackId;
+            }
+        }
+
+        return null;
+    }
+
+    private function getPlayableTrackCountsByCategory(int $lobbyId, array $selectedCategoryIds): array
+    {
+        $selectedCategoryIds = $this->normalizeCategoryIds($selectedCategoryIds);
+        if (empty($selectedCategoryIds)) {
+            return [];
+        }
+
+        $placeholders = [];
+        $params = [
+            'pool_lobby_id_exists' => $lobbyId,
+            'pool_lobby_id_empty' => $lobbyId,
+        ];
+        foreach ($selectedCategoryIds as $index => $categoryId) {
+            $key = 'category_' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $categoryId;
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT f.category_id, COUNT(DISTINCT t.id) AS track_count
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             WHERE f.category_id IN (' . implode(', ', $placeholders) . ')
+               AND f.is_active = 1
+               AND t.is_active = 1
+               AND t.is_validated = 1
+               AND (
+                 EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = t.id)
+                 OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
+               )
+             GROUP BY f.category_id'
+        );
+        $stmt->execute($params);
+
+        $counts = array_fill_keys($selectedCategoryIds, 0);
+        foreach ($stmt->fetchAll() as $row) {
+            $counts[(int)$row['category_id']] = (int)$row['track_count'];
+        }
+
+        return $counts;
+    }
+
+    private function calculateBalancedCategoryQuotas(array $availableByCategory, int $totalRounds, int $lobbyId): array
+    {
+        $totalRounds = max(0, $totalRounds);
+        $quotas = [];
+        $categoryIds = [];
+        foreach ($availableByCategory as $categoryId => $availableTracks) {
+            $categoryId = (int)$categoryId;
+            $availableTracks = max(0, (int)$availableTracks);
+            $quotas[$categoryId] = 0;
+            if ($availableTracks > 0) {
+                $categoryIds[] = $categoryId;
+            }
+        }
+
+        if ($totalRounds <= 0 || empty($categoryIds)) {
+            return $quotas;
+        }
+
+        $orderIndexes = $this->buildStableCategoryOrderIndexes($categoryIds, $lobbyId);
+        for ($round = 0; $round < $totalRounds; $round++) {
+            $candidates = array_values(array_filter(
+                $categoryIds,
+                fn (int $categoryId): bool => $quotas[$categoryId] < (int)$availableByCategory[$categoryId]
+            ));
+            if (empty($candidates)) {
+                break;
+            }
+
+            usort($candidates, function (int $a, int $b) use ($quotas, $orderIndexes): int {
+                if ($quotas[$a] !== $quotas[$b]) {
+                    return $quotas[$a] <=> $quotas[$b];
+                }
+
+                return ($orderIndexes[$a] ?? 0) <=> ($orderIndexes[$b] ?? 0);
+            });
+
+            $quotas[$candidates[0]]++;
+        }
+
+        return $quotas;
+    }
+
+    private function getScheduledCategoryCounts(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT f.category_id, COUNT(*) AS scheduled_count
+             FROM (
+                SELECT track_id FROM mq_rounds WHERE lobby_id = :round_lobby_id
+                UNION ALL
+                SELECT track_id FROM mq_round_preloads WHERE lobby_id = :preload_lobby_id
+             ) scheduled
+             JOIN mq_tracks t ON t.id = scheduled.track_id
+             JOIN mq_families f ON f.id = t.family_id
+             GROUP BY f.category_id'
+        );
+        $stmt->execute([
+            'round_lobby_id' => $lobbyId,
+            'preload_lobby_id' => $lobbyId,
+        ]);
+
+        $counts = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $counts[(int)$row['category_id']] = (int)$row['scheduled_count'];
+        }
+
+        return $counts;
+    }
+
+    private function orderCategoriesForNextPick(
+        array $selectedCategoryIds,
+        array $availableByCategory,
+        array $quotas,
+        array $scheduledCounts,
+        int $lobbyId
+    ): array {
+        $categoryIds = array_values(array_filter(
+            $this->normalizeCategoryIds($selectedCategoryIds),
+            fn (int $categoryId): bool => (int)($availableByCategory[$categoryId] ?? 0) > 0
+        ));
+        if (empty($categoryIds)) {
+            return [];
+        }
+
+        $orderIndexes = $this->buildStableCategoryOrderIndexes($categoryIds, $lobbyId);
+        usort($categoryIds, function (int $a, int $b) use ($quotas, $scheduledCounts, $availableByCategory, $orderIndexes): int {
+            $quotaA = (int)($quotas[$a] ?? 0);
+            $quotaB = (int)($quotas[$b] ?? 0);
+            $scheduledA = (int)($scheduledCounts[$a] ?? 0);
+            $scheduledB = (int)($scheduledCounts[$b] ?? 0);
+            $deficitA = $quotaA - $scheduledA;
+            $deficitB = $quotaB - $scheduledB;
+            $hasDeficitA = $deficitA > 0;
+            $hasDeficitB = $deficitB > 0;
+
+            if ($hasDeficitA !== $hasDeficitB) {
+                return $hasDeficitA ? -1 : 1;
+            }
+
+            if ($deficitA !== $deficitB) {
+                return $deficitB <=> $deficitA;
+            }
+
+            if ($scheduledA !== $scheduledB) {
+                return $scheduledA <=> $scheduledB;
+            }
+
+            $availableA = (int)($availableByCategory[$a] ?? 0);
+            $availableB = (int)($availableByCategory[$b] ?? 0);
+            if ($availableA !== $availableB) {
+                return $availableA <=> $availableB;
+            }
+
+            return ($orderIndexes[$a] ?? 0) <=> ($orderIndexes[$b] ?? 0);
+        });
+
+        return $categoryIds;
+    }
+
+    private function buildStableCategoryOrderIndexes(array $categoryIds, int $lobbyId): array
+    {
+        $categoryIds = array_values(array_unique(array_map('intval', $categoryIds)));
+        usort($categoryIds, function (int $a, int $b) use ($lobbyId): int {
+            $hashA = hexdec(substr(sha1($lobbyId . ':' . $a), 0, 8));
+            $hashB = hexdec(substr(sha1($lobbyId . ':' . $b), 0, 8));
+            if ($hashA !== $hashB) {
+                return $hashA <=> $hashB;
+            }
+
+            return $a <=> $b;
+        });
+
+        $indexes = [];
+        foreach ($categoryIds as $index => $categoryId) {
+            $indexes[$categoryId] = $index;
+        }
+
+        return $indexes;
+    }
+
     private function pickEligibleTrack(int $lobbyId, array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
     {
-        $where = ['t.is_active = 1', 't.is_validated = 1'];
+        $where = ['f.is_active = 1', 't.is_active = 1', 't.is_validated = 1'];
         $params = [
             'pool_lobby_id_exists' => $lobbyId,
             'pool_lobby_id_empty' => $lobbyId,
@@ -1509,6 +1713,7 @@ class LobbyService
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              WHERE t.id = :track_id
+               AND f.is_active = 1
                AND t.is_active = 1
                AND t.is_validated = 1
                AND (

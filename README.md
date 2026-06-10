@@ -13,6 +13,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
 - Creation des manches avec une courte synchronisation serveur (`MQ_ROUND_PRELOAD_SECONDS`) et une piste d'avance stockee en base pour permettre aux clients et aux TV de precharger la prochaine video YouTube en arriere-plan.
+- Repartition des musiques par categorie equilibree sur la duree du salon: si plusieurs categories sont selectionnees, le backend vise un nombre equivalent de manches par categorie; une categorie avec trop peu de musiques donne son maximum, puis les manches restantes sont redistribuees entre les autres categories.
 - Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
 - Administration musicale reservee au droit central `melodyquest.catalog.manage` ou au super-admin global; `users.role='admin'` reste seulement un fallback de transition.
 
