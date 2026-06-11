@@ -271,6 +271,11 @@ class LobbyService
             )->execute(['lobby_id' => $lobbyId]);
 
             $this->db->prepare(
+                'DELETE FROM mq_round_preloads
+                 WHERE lobby_id = :lobby_id'
+            )->execute(['lobby_id' => $lobbyId]);
+
+            $this->db->prepare(
                 'UPDATE mq_lobby_players
                  SET score = 0,
                      is_ready = 0
@@ -309,6 +314,7 @@ class LobbyService
 
         $fields = [];
         $params = ['id' => $lobbyId];
+        $clearPreloads = false;
 
         if (isset($payload['name'])) {
             $fields[] = 'name = :name';
@@ -331,6 +337,7 @@ class LobbyService
             $totalRounds = $this->validateTotalRoundsValue($payload['total_rounds']);
             $fields[] = 'total_rounds = :total_rounds';
             $params['total_rounds'] = $totalRounds;
+            $clearPreloads = true;
         }
         if (isset($payload['round_duration_seconds'])) {
             $duration = $this->validateRoundDurationValue($payload['round_duration_seconds']);
@@ -355,6 +362,7 @@ class LobbyService
             $params['selected_category_ids'] = $this->encodeCategoryIds(
                 $this->normalizeCategoryIds($payload['selected_category_ids'])
             );
+            $clearPreloads = true;
         }
         if (array_key_exists('show_track_category', $payload)) {
             $fields[] = 'show_track_category = :show_track_category';
@@ -373,6 +381,11 @@ class LobbyService
             $sql = 'UPDATE mq_lobbies SET ' . implode(', ', $fields) . ' WHERE id = :id';
             $stmt = $this->db->prepare($sql);
             $stmt->execute($params);
+        }
+
+        if ($clearPreloads) {
+            $stmt = $this->db->prepare('DELETE FROM mq_round_preloads WHERE lobby_id = :lobby_id');
+            $stmt->execute(['lobby_id' => $lobbyId]);
         }
 
         return $this->getLobbyById($lobbyId);
@@ -403,6 +416,8 @@ class LobbyService
             'added_by' => $userId,
         ]);
 
+        $this->clearRoundPreloadsForLobby($lobbyId);
+
         return $this->listTrackPool($userId, $lobbyId);
     }
 
@@ -416,6 +431,8 @@ class LobbyService
 
         $stmt = $this->db->prepare('DELETE FROM mq_lobby_track_pool WHERE lobby_id = :lobby_id AND track_id = :track_id');
         $stmt->execute(['lobby_id' => $lobbyId, 'track_id' => $trackId]);
+
+        $this->clearRoundPreloadsForLobby($lobbyId);
 
         return $this->listTrackPool($userId, $lobbyId);
     }
@@ -472,7 +489,7 @@ class LobbyService
             }
 
             $this->createRunningRoundLocked($lobbyId, $trackId, $roundNumber);
-            $this->ensureRoundPreloadLocked($lobbyId, $roundNumber + 1, $targetRounds);
+            $this->ensureUpcomingRoundPreloadsLocked($lobbyId, $roundNumber + 1, $targetRounds);
 
             $this->db->commit();
         } catch (Throwable $e) {
@@ -616,7 +633,7 @@ class LobbyService
                     $nextRoundNumber = (int)$round['round_number'] + 1;
                     $nextTrackId = $this->consumeRoundPreloadLocked($lobbyId, $nextRoundNumber) ?? $this->pickTrackForLobby($lobbyId);
                     $this->createRunningRoundLocked($lobbyId, $nextTrackId, $nextRoundNumber);
-                    $this->ensureRoundPreloadLocked($lobbyId, $nextRoundNumber + 1, $totalRounds);
+                    $this->ensureUpcomingRoundPreloadsLocked($lobbyId, $nextRoundNumber + 1, $totalRounds);
                 }
 
                 $advanced = true;
@@ -924,6 +941,104 @@ class LobbyService
         return $this->buildRoundStateSnapshot($lobbyId);
     }
 
+    public function prepareTvPreloads(int $lobbyId): void
+    {
+        if ($lobbyId <= 0) {
+            return;
+        }
+
+        $this->cleanupStaleOwnerLobbies();
+        $this->db->beginTransaction();
+        try {
+            $lobby = $this->requireLobbyForUpdate($lobbyId);
+            $status = strtolower((string)($lobby['status'] ?? ''));
+            if (!in_array($status, ['waiting', 'playing'], true)) {
+                $this->db->commit();
+                return;
+            }
+
+            try {
+                $launchConfig = $this->assertLobbyCanStart($lobby);
+            } catch (RuntimeException) {
+                $this->db->commit();
+                return;
+            }
+
+            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
+            $firstRoundNumber = $round
+                ? (int)$round['round_number'] + 1
+                : $this->getNextRoundNumber($lobbyId);
+
+            $this->ensureUpcomingRoundPreloadsLocked($lobbyId, $firstRoundNumber, (int)$launchConfig['total_rounds']);
+            $this->db->commit();
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    public function releaseRoundStartForTv(int $lobbyId, int $roundId, int $trackId): array
+    {
+        if ($lobbyId <= 0 || $roundId <= 0 || $trackId <= 0) {
+            throw new RuntimeException('Manche TV invalide');
+        }
+
+        $this->cleanupStaleOwnerLobbies();
+        $this->db->beginTransaction();
+        try {
+            $this->requireLobbyForUpdate($lobbyId);
+            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
+            if (!$round || (int)$round['id'] !== $roundId) {
+                throw new RuntimeException('Manche TV introuvable');
+            }
+            if ((int)$round['track_id'] !== $trackId) {
+                throw new RuntimeException('La musique TV ne correspond pas à la manche');
+            }
+
+            $released = false;
+            if ($this->isRoundWaitingToStart($round)) {
+                $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . MQ_TV_READY_START_LEAD_SECONDS . ' SECOND)';
+                $updateRound = $this->db->prepare(
+                    'UPDATE mq_rounds
+                     SET started_at = ' . $startExpression . '
+                     WHERE id = :id
+                       AND status = "running"
+                       AND started_at > ' . $startExpression
+                );
+                $updateRound->execute(['id' => $roundId]);
+                $released = $updateRound->rowCount() > 0;
+
+                if ($released) {
+                    $this->db->prepare(
+                        'UPDATE mq_lobbies
+                         SET playback_started_at = (SELECT started_at FROM mq_rounds WHERE id = :round_id),
+                             sync_revision = sync_revision + 1
+                         WHERE id = :lobby_id'
+                    )->execute([
+                        'round_id' => $roundId,
+                        'lobby_id' => $lobbyId,
+                    ]);
+                }
+            }
+
+            $this->db->commit();
+
+            return [
+                'released' => $released,
+                'lobby_id' => $lobbyId,
+                'round_id' => $roundId,
+                'track_id' => $trackId,
+            ];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     public function getScoreboard(int $userId, int $lobbyId): array
     {
         $this->touchLobbyMember($lobbyId, $userId);
@@ -1056,13 +1171,13 @@ class LobbyService
         ];
     }
 
-    public function buildLobbyRealtimeSnapshot(int $lobbyId): array
+    public function buildLobbyRealtimeSnapshot(int $lobbyId, array $options = []): array
     {
         $this->cleanupStaleOwnerLobbies();
 
         $detail = $this->getLobbyById($lobbyId);
         $pool = ['items' => $this->getTrackPoolSnapshotItems($lobbyId)];
-        $round = $this->buildRoundStateSnapshot($lobbyId);
+        $round = $this->buildRoundStateSnapshot($lobbyId, $options);
         $playback = $this->getPlaybackState($lobbyId);
         $scoreboard = $this->buildScoreboardSnapshot($lobbyId);
 
@@ -1315,6 +1430,18 @@ class LobbyService
         return $row ?: null;
     }
 
+    private function getNextRoundNumber(int $lobbyId): int
+    {
+        $stmt = $this->db->prepare(
+            'SELECT COALESCE(MAX(round_number), 0) + 1 AS next_round
+             FROM mq_rounds
+             WHERE lobby_id = :lobby_id'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return max(1, (int)($stmt->fetch()['next_round'] ?? 1));
+    }
+
     private function pickTrackForLobby(int $lobbyId): int
     {
         $lobby = $this->requireLobby($lobbyId);
@@ -1324,8 +1451,8 @@ class LobbyService
         }
 
         $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
-        $usedTrackIds = $this->getPlayedTrackIds($lobbyId);
-        $usedFamilyIds = $this->getPlayedFamilyIds($lobbyId);
+        $usedTrackIds = $this->getScheduledTrackIds($lobbyId);
+        $usedFamilyIds = $this->getScheduledFamilyIds($lobbyId);
 
         $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, $usedTrackIds, $usedFamilyIds);
         if ($trackId !== null) {
@@ -1364,6 +1491,43 @@ class LobbyService
         $stmt->execute(['lobby_id' => $lobbyId]);
 
         return array_values(array_filter(array_map('intval', array_column($stmt->fetchAll(), 'family_id'))));
+    }
+
+    private function getScheduledTrackIds(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT DISTINCT track_id
+             FROM (
+                SELECT track_id FROM mq_rounds WHERE lobby_id = :round_lobby_id
+                UNION ALL
+                SELECT track_id FROM mq_round_preloads WHERE lobby_id = :preload_lobby_id
+             ) scheduled'
+        );
+        $stmt->execute([
+            'round_lobby_id' => $lobbyId,
+            'preload_lobby_id' => $lobbyId,
+        ]);
+
+        return array_values(array_filter(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN))));
+    }
+
+    private function getScheduledFamilyIds(int $lobbyId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT DISTINCT t.family_id
+             FROM (
+                SELECT track_id FROM mq_rounds WHERE lobby_id = :round_lobby_id
+                UNION ALL
+                SELECT track_id FROM mq_round_preloads WHERE lobby_id = :preload_lobby_id
+             ) scheduled
+             JOIN mq_tracks t ON t.id = scheduled.track_id'
+        );
+        $stmt->execute([
+            'round_lobby_id' => $lobbyId,
+            'preload_lobby_id' => $lobbyId,
+        ]);
+
+        return array_values(array_filter(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN))));
     }
 
     private function pickBalancedEligibleTrack(
@@ -1806,6 +1970,15 @@ class LobbyService
         ]);
     }
 
+    private function ensureUpcomingRoundPreloadsLocked(int $lobbyId, int $firstRoundNumber, int $totalRounds): void
+    {
+        $firstRoundNumber = max(1, $firstRoundNumber);
+        $lastRoundNumber = min($totalRounds, $firstRoundNumber + MQ_TV_PRELOAD_LOOKAHEAD - 1);
+        for ($roundNumber = $firstRoundNumber; $roundNumber <= $lastRoundNumber; $roundNumber++) {
+            $this->ensureRoundPreloadLocked($lobbyId, $roundNumber, $totalRounds);
+        }
+    }
+
     private function clearRoundPreload(int $lobbyId, int $roundNumber): void
     {
         if ($roundNumber <= 0) {
@@ -1823,9 +1996,36 @@ class LobbyService
         ]);
     }
 
+    private function clearRoundPreloadsForTrack(int $lobbyId, int $trackId): void
+    {
+        if ($trackId <= 0) {
+            return;
+        }
+
+        $stmt = $this->db->prepare(
+            'DELETE FROM mq_round_preloads
+             WHERE lobby_id = :lobby_id
+               AND track_id = :track_id'
+        );
+        $stmt->execute([
+            'lobby_id' => $lobbyId,
+            'track_id' => $trackId,
+        ]);
+    }
+
+    private function clearRoundPreloadsForLobby(int $lobbyId): void
+    {
+        if ($lobbyId <= 0) {
+            return;
+        }
+
+        $stmt = $this->db->prepare('DELETE FROM mq_round_preloads WHERE lobby_id = :lobby_id');
+        $stmt->execute(['lobby_id' => $lobbyId]);
+    }
+
     private function createRunningRoundLocked(int $lobbyId, int $trackId, int $roundNumber): void
     {
-        $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . MQ_ROUND_PRELOAD_SECONDS . ' SECOND)';
+        $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . $this->getRoundStartDelaySeconds($lobbyId) . ' SECOND)';
         $insert = $this->db->prepare(
             'INSERT INTO mq_rounds (lobby_id, round_number, track_id, started_at, status)
              VALUES (:lobby_id, :round_number, :track_id, ' . $startExpression . ', "running")'
@@ -1851,7 +2051,30 @@ class LobbyService
             'id' => $lobbyId,
         ]);
 
+        $this->clearRoundPreloadsForTrack($lobbyId, $trackId);
         $this->resetLobbyReadyVotes($lobbyId);
+    }
+
+    private function getRoundStartDelaySeconds(int $lobbyId): int
+    {
+        return $this->hasActiveTvPairing($lobbyId)
+            ? MQ_TV_ROUND_PRELOAD_MAX_WAIT_SECONDS
+            : MQ_ROUND_PRELOAD_SECONDS;
+    }
+
+    private function hasActiveTvPairing(int $lobbyId): bool
+    {
+        $stmt = $this->db->prepare(
+            'SELECT 1
+             FROM mq_tv_pairings
+             WHERE lobby_id = :lobby_id
+               AND status = "linked"
+               AND expires_at > NOW(3)
+             LIMIT 1'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return (bool)$stmt->fetchColumn();
     }
 
     private function transitionRoundToReveal(int $lobbyId, int $roundId, bool $unlockNextVoteImmediately = false, ?array $lobby = null): bool
@@ -2267,17 +2490,35 @@ class LobbyService
         return $this->hydrateTrackRows($stmt->fetchAll());
     }
 
-    private function buildRoundStateSnapshot(int $lobbyId): array
+    private function buildRoundStateSnapshot(int $lobbyId, array $options = []): array
     {
         $lobby = $this->requireLobby($lobbyId);
+        $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
+        $preloadLimit = max(1, min(MQ_TV_PRELOAD_LOOKAHEAD, (int)($options['preload_limit'] ?? 1)));
+        $includeWaitingPreloads = !empty($options['include_waiting_preloads']);
         $round = $this->getCurrentRoundRow($lobbyId);
         if (!$round) {
-            return ['round' => null, 'answers' => []];
+            $snapshot = [
+                'server_time_unix' => microtime(true),
+                'round' => null,
+                'answers' => [],
+            ];
+
+            if ($includeWaitingPreloads) {
+                $nextRoundNumber = $this->getNextRoundNumber($lobbyId);
+                $upcomingTracks = $this->buildRoundPreloadTrackSnapshots($lobbyId, $nextRoundNumber, $totalRounds, $preloadLimit);
+                $snapshot['next_round_number'] = $upcomingTracks[0]['round_number'] ?? null;
+                $snapshot['next_track'] = $upcomingTracks[0] ?? null;
+                $snapshot['upcoming_tracks'] = $upcomingTracks;
+            }
+
+            return $snapshot;
         }
 
         $track = $this->getTrackSnapshotById((int)$round['track_id']);
         $nextRoundNumber = (int)$round['round_number'] + 1;
-        $nextTrack = $this->buildRoundPreloadTrackSnapshot($lobbyId, $nextRoundNumber, $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS));
+        $upcomingTracks = $this->buildRoundPreloadTrackSnapshots($lobbyId, $nextRoundNumber, $totalRounds, $preloadLimit);
+        $nextTrack = $upcomingTracks[0] ?? null;
 
         $answersStmt = $this->db->prepare(
             'SELECT a.user_id, u.username, a.guess_title, a.guess_artist, a.is_correct_title, a.is_correct_artist, a.score_awarded, a.answered_at
@@ -2321,12 +2562,34 @@ class LobbyService
                 'is_reveal_visible' => $isRevealVisible,
                 'track' => $track ?: null,
             ],
-            'next_round_number' => $nextTrack ? $nextRoundNumber : null,
+            'next_round_number' => $nextTrack['round_number'] ?? null,
             'next_track' => $nextTrack,
+            'upcoming_tracks' => $upcomingTracks,
             'answers' => $answers,
             'early_reveal_votes' => $this->buildEarlyRevealVoteSnapshot((int)$round['id']),
             'suggestion_holds' => $this->buildSuggestionHoldSnapshot((int)$round['id']),
         ];
+    }
+
+    private function buildRoundPreloadTrackSnapshots(int $lobbyId, int $firstRoundNumber, int $totalRounds, int $limit): array
+    {
+        if ($firstRoundNumber <= 0 || $firstRoundNumber > $totalRounds || $limit <= 0) {
+            return [];
+        }
+
+        $items = [];
+        $lastRoundNumber = min($totalRounds, $firstRoundNumber + $limit - 1);
+        for ($roundNumber = $firstRoundNumber; $roundNumber <= $lastRoundNumber; $roundNumber++) {
+            $track = $this->buildRoundPreloadTrackSnapshot($lobbyId, $roundNumber, $totalRounds);
+            if (!$track) {
+                continue;
+            }
+
+            $track['round_number'] = $roundNumber;
+            $items[] = $track;
+        }
+
+        return $items;
     }
 
     private function buildRoundPreloadTrackSnapshot(int $lobbyId, int $roundNumber, int $totalRounds): ?array

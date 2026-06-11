@@ -12,7 +12,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Validation manuelle des nouvelles musiques avant usage en partie
 - Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
-- Creation des manches avec une courte synchronisation serveur (`MQ_ROUND_PRELOAD_SECONDS`) et une piste d'avance stockee en base pour permettre aux clients et aux TV de precharger la prochaine video YouTube en arriere-plan.
+- Creation des manches avec une courte synchronisation serveur (`MQ_ROUND_PRELOAD_SECONDS`) et une file de pistes stockee en base pour permettre aux clients et aux TV de precharger les prochaines videos YouTube en arriere-plan.
 - Repartition des musiques par categorie equilibree sur la duree du salon: si plusieurs categories sont selectionnees, le backend vise un nombre equivalent de manches par categorie; une categorie avec trop peu de musiques donne son maximum, puis les manches restantes sont redistribuees entre les autres categories.
 - Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
 - Administration musicale reservee au droit central `melodyquest.catalog.manage` ou au super-admin global; `users.role='admin'` reste seulement un fallback de transition.
@@ -42,7 +42,7 @@ La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lo
 La migration `008` ajoute `mq_lobbies.answer_similarity_threshold`, seuil de correspondance entre `70` et `100`, avec `100` comme comportement strict historique.
 La migration `009` ajoute `mq_player_suggestions` pour les corrections/alias/nouvelles musiques proposes par les joueurs et `mq_round_suggestion_holds` pour bloquer temporairement le passage a la manche suivante pendant qu'un joueur remplit une proposition.
 La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre une television/ecran dedie et un salon MelodyQuest. Le code TV expire rapidement tant qu'il est en attente, puis la liaison est prolongee pendant que la TV synchronise le salon.
-La migration `011` ajoute `mq_round_preloads`, file de piste suivante par salon/manche. Elle permet de choisir la prochaine musique avant le vote "suivant" afin que les fronts puissent precharger YouTube sans afficher une attente longue.
+La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir plusieurs musiques avant le vote "suivant" afin que la TV puisse precharger YouTube pendant le lobby ou la manche precedente.
 
 ## Import catalogue CSV
 
@@ -111,7 +111,8 @@ Mode TV public:
 
 - `POST action=createTvPairing`: cree un code court et un `device_token` pour l'ecran TV
 - `GET action=getTvPairing&device_token=...`: permet a la TV de savoir si son code est encore en attente ou lie
-- `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur
+- `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur; prepare aussi la file `upcoming_tracks` pour la TV.
+- `POST action=markTvRoundReady`: appele par la TV quand le lecteur YouTube courant joue en muet; si une manche attend encore son depart, l'API rapproche `started_at` et publie un snapshot Mercure pour resynchroniser les joueurs.
 
 Flux temps reel:
 
@@ -152,7 +153,10 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
-- `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`. Cette marge laisse notamment le mode TV prechauffer la video courante en muet avant de liberer le son. Le prechargement de la piste suivante repose sur `mq_round_preloads` et le champ `next_track`.
+- `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches sans TV; valeur par defaut: `3`, bornee entre `0` et `10`.
+- `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir la TV peut recevoir/preparer; valeur par defaut: `3`, bornee entre `1` et `5`.
+- `MQ_TV_ROUND_PRELOAD_MAX_WAIT_SECONDS` definit la marge maximale appliquee lorsqu'une TV est liee au salon; valeur par defaut: `12`, bornee a `20` et jamais inferieure a `MQ_ROUND_PRELOAD_SECONDS`. La TV peut raccourcir cette attente via `markTvRoundReady` des que YouTube est pret.
+- `MQ_TV_READY_START_LEAD_SECONDS` definit le delai restant apres signalement "TV prete"; valeur par defaut: `1`, bornee entre `0` et `3`.
   - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure

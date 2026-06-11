@@ -177,6 +177,9 @@ try {
                     $userId = AuthMiddleware::check();
                     $tvController->linkPairing($userId, $body);
                     break;
+                case 'markTvRoundReady':
+                    $tvController->markRoundReady($body);
+                    break;
                 case 'createCategory':
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
