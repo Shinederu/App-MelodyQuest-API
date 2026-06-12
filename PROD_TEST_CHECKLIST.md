@@ -2,7 +2,8 @@
 
 ## Prerequis
 
-- Les fichiers `API/melodyquest/*` deployes sur le serveur API.
+- Les fichiers runtime `API/melodyquest` deployes sur le serveur API: `index.php`, `config\`, `controllers\`, `middlewares\`, `services\`, `utils\`.
+- Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
 - Base de donnees `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/011_melodyquest_round_preloads.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via les droits `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/` (index + assets).

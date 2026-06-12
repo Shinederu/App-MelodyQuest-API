@@ -1,6 +1,29 @@
 # MelodyQuest API
 
+## Role
+
 MelodyQuest est un blindtest multijoueur base sur une authentification centralisee partagee sur le domaine/sous-domaines Shinederu.
+
+Cette API est le proprietaire backend de MelodyQuest: salons, manches, reponses, catalogue musical, validation, suggestions joueurs, liaison TV et publication temps reel.
+
+## Repo et deploiement
+
+- Repo source: `P:\DEV\GitHub\App-MelodyQuest-API`
+- Repo GitHub: `https://github.com/Shinederu/App-MelodyQuest-API.git`
+- Runtime PROD: `P:\PROD\API\melodyquest`
+- Endpoint public: `https://api.shinederu.ch/melodyquest/`
+- Code projet stable: `melodyquest`
+
+Le dossier PROD ne doit pas etre un clone du repo. Il ne doit contenir que le runtime API necessaire:
+
+- `index.php`;
+- `config\`;
+- `controllers\`;
+- `middlewares\`;
+- `services\`;
+- `utils\`.
+
+Ne pas deployer en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches, brouillons ou exports.
 
 ## Etat de pause - 2026-06-12
 
@@ -71,8 +94,8 @@ Mapping applique:
 
 Commandes utiles:
 
-- `php melodyquest/scripts/import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --dry-run`
-- `php melodyquest/scripts/import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --created-by=1`
+- `php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --dry-run`
+- `php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --created-by=1`
 
 ## Actions API (index.php)
 
@@ -127,6 +150,23 @@ Mode TV public:
 
 Il n'existe plus d'action `markTvRoundReady`. Le frontend TV ne signale plus au backend qu'une video est prete; les manches demarrent selon `MQ_ROUND_PRELOAD_SECONDS`.
 
+## Authentification et permissions
+
+- Les endpoints authentifies valident le cookie session `sid` via `AuthMiddleware`.
+- `AuthMiddleware` lit `auth_sessions` et `users` dans le schema `ShinedeCore`.
+- L'API charge le runtime `.env` de `P:\PROD\API\auth` via l'autoload Auth si disponible, pour partager la config DB/Mercure.
+- Les permissions admin catalogue passent par `Module-ShinedeCore-PHP`, deploye en PROD sous `P:\PROD\API\core`.
+- Permission stable: `melodyquest.catalog.manage`.
+- `core.super_admin` donne le bypass global; `users.role='admin'` reste seulement un fallback de transition.
+
+Le code doit verifier les permissions avec:
+
+```php
+hasPermission($userId, 'melodyquest', 'catalog.manage')
+```
+
+Ne pas ajouter de logique metier basee sur le libelle d'un role configurable.
+
 Flux temps reel:
 
 - priorite: hub Mercure `https://mercure.shinederu.ch/.well-known/mercure`
@@ -152,7 +192,7 @@ Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin glob
 
 `validateTrack` accepte au minimum `track_id` ou `id`. Il peut aussi recevoir les champs de correction `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id` ou `youtube_url`; dans ce cas l'API applique ces corrections puis valide la musique dans une meme transaction. Quand `aliases` est fourni, la liste remplace les alias acceptes de l'oeuvre cible via `mq_family_aliases`.
 
-## Environnement
+## Configuration
 
 Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 
@@ -170,6 +210,8 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir l'API peut garder dans la file de prochaines manches; valeur par defaut: `3`, bornee entre `1` et `5`. Le nom est historique: le frontend TV actuel ne pilote pas de lecteur d'avance.
 - `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
+`P:\DEV\GitHub\App-MelodyQuest-API\.env.example` reste un exemple local versionne. Il ne doit pas etre copie en PROD.
+
 ## Mercure
 
 - Hub vise: `https://mercure.shinederu.ch/.well-known/mercure`
@@ -179,12 +221,77 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - Les reponses `listPublicLobbies` et `getLobbyByCode` exposent un bloc `data.realtime`
 - Le frontend tente Mercure d'abord, puis retombe sur le SSE historique si la config hub/JWT n'est pas encore disponible
 
+Les topics doivent pouvoir etre resynchronises par API HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`). Mercure ne sert pas a executer des commandes critiques.
+
+## Dossiers runtime et fichiers partages
+
+- `P:\PROD\API\melodyquest` contient uniquement le runtime API PHP liste dans la section deploiement.
+- Aucun stockage persistant fichier n'est possede par MelodyQuest actuellement.
+- Le catalogue, les lobbies, les scores, les suggestions et les liaisons TV vivent en DB dans les tables `mq_*`.
+- Les logs applicatifs passent par `error_log` PHP; ne jamais logger de secret, mot de passe, token ou JWT complet.
+
+## Dependances inter-projets
+
+- `Module-Auth-API` (`https://api.shinederu.ch/auth/`): sessions `sid`, utilisateurs, avatars.
+- `Module-ShinedeCore-PHP` (`P:\PROD\API\core`): permissions `core_*`.
+- `App-MelodyQuest`: client navigateur consommateur de cette API.
+- Mercure: publication de snapshots lobbies publics/prives.
+- MySQL `ShinedeCore`: tables `users`, `auth_sessions`, `core_*`, `mq_*`.
+
+Une integration avec un autre projet doit passer par l'API HTTP proprietaire du projet cible, pas par ecriture directe dans ses tables.
+
 ## Regle admin
 
 Le statut admin n'est pas expose au frontend pour elevation.
 Les droits catalogue sont portes par les tables `core_*`.
 Le role seed par defaut est `melodyquest.catalog_admin`; il donne la permission backend `catalog.manage`, souvent notee `melodyquest.catalog.manage` dans la documentation.
 Pendant la transition, `users.role='admin'` reste un fallback super-admin global.
+
+## Verifications
+
+```powershell
+Get-ChildItem P:\DEV\GitHub\App-MelodyQuest-API -Recurse -Filter *.php | % { php -l $_.FullName }
+git -c safe.directory=* diff --check
+rg -n "password|passwd|secret|BEGIN (RSA|OPENSSH|PRIVATE)|api_key" P:\DEV\GitHub\App-MelodyQuest-API
+```
+
+Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
+
+## Deploiement
+
+Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.env`, logs, caches runtime). MelodyQuest utilise actuellement la config Auth partagee; ne pas creer de secret dans le repo.
+
+Copie runtime type:
+
+```powershell
+$src = 'P:\DEV\GitHub\App-MelodyQuest-API'
+$dst = 'P:\PROD\API\melodyquest'
+Copy-Item "$src\index.php" "$dst\index.php" -Force
+foreach ($dir in @('config','controllers','middlewares','services','utils')) {
+  Copy-Item "$src\$dir\*" "$dst\$dir" -Recurse -Force
+}
+```
+
+Nettoyer les restes non-runtime si presents en PROD:
+
+```powershell
+$nonRuntime = @(
+  'P:\PROD\API\melodyquest\README.md',
+  'P:\PROD\API\melodyquest\AGENTS.md',
+  'P:\PROD\API\melodyquest\PROD_TEST_CHECKLIST.md',
+  'P:\PROD\API\melodyquest\.env.example',
+  'P:\PROD\API\melodyquest\sql',
+  'P:\PROD\API\melodyquest\scripts'
+)
+Remove-Item -LiteralPath $nonRuntime -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+## Notes de reprise
+
+- Projet mis en pause le 2026-06-12 avec TV revenue au lecteur YouTube simple.
+- Ne pas restaurer `markTvRoundReady` ou le double lecteur TV sans nouvelle analyse.
+- YouTube reste la source principale; l'hebergement local d'audio a ete refuse.
+- Les migrations SQL restent dans le repo DEV et doivent etre appliquees explicitement si un schema neuf est prepare.
 
 
 
