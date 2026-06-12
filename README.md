@@ -2,6 +2,17 @@
 
 MelodyQuest est un blindtest multijoueur base sur une authentification centralisee partagee sur le domaine/sous-domaines Shinederu.
 
+## Etat de pause - 2026-06-12
+
+Le projet MelodyQuest est mis en pause dans un etat stable de reprise. Les derniers commits applicatifs lies a MelodyQuest avant cette pause sont:
+
+- frontend `MelodyQuest`: `295dd11 Restore basic MelodyQuest TV player`;
+- backend `API`: `2f468a9 Remove MelodyQuest TV ready playback flow`.
+
+Le mode TV public reste actif, mais il utilise de nouveau un lecteur YouTube iframe simple cote frontend. L'action experimentale `markTvRoundReady`, le demarrage accelere par signal "TV prete" et les constantes `MQ_TV_ROUND_PRELOAD_MAX_WAIT_SECONDS` / `MQ_TV_READY_START_LEAD_SECONDS` ont ete retires. Les tables `mq_tv_pairings` et `mq_round_preloads` restent utiles: la premiere lie une TV a un salon, la seconde prepare la file de pistes a venir cote backend.
+
+Point a surveiller lors de la reprise: les delais de buffering YouTube sur TV ne sont pas resolus de facon definitive. Les essais de double lecteur TV ont cree des regressions son/video et ne doivent pas etre remis tels quels.
+
 ## Contraintes produit
 
 - Frontend en JS/CSS/HTML (sans framework)
@@ -12,7 +23,7 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 - Validation manuelle des nouvelles musiques avant usage en partie
 - Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
 - Lecture synchronisee entre joueurs via etat de lecture partage
-- Creation des manches avec une courte synchronisation serveur (`MQ_ROUND_PRELOAD_SECONDS`) et une file de pistes stockee en base pour permettre aux clients et aux TV de precharger les prochaines videos YouTube en arriere-plan.
+- Creation des manches avec une courte synchronisation serveur (`MQ_ROUND_PRELOAD_SECONDS`) et une file de pistes stockee en base pour connaitre les prochaines musiques sans recalculer le tirage au dernier moment.
 - Repartition des musiques par categorie equilibree sur la duree du salon: si plusieurs categories sont selectionnees, le backend vise un nombre equivalent de manches par categorie; une categorie avec trop peu de musiques donne son maximum, puis les manches restantes sont redistribuees entre les autres categories.
 - Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
 - Administration musicale reservee au droit central `melodyquest.catalog.manage` ou au super-admin global; `users.role='admin'` reste seulement un fallback de transition.
@@ -113,6 +124,8 @@ Mode TV public:
 - `GET action=getTvPairing&device_token=...`: permet a la TV de savoir si son code est encore en attente ou lie
 - `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur.
 
+Il n'existe plus d'action `markTvRoundReady`. Le frontend TV ne signale plus au backend qu'une video est prete; les manches demarrent selon `MQ_ROUND_PRELOAD_SECONDS`.
+
 Flux temps reel:
 
 - priorite: hub Mercure `https://mercure.shinederu.ch/.well-known/mercure`
@@ -153,8 +166,8 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
 - `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`.
-- `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir l'API peut garder dans la file TV; valeur par defaut: `3`, bornee entre `1` et `5`.
-  - `MQ_MERCURE_TOPIC_BASE` (optionnel)
+- `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir l'API peut garder dans la file de prochaines manches; valeur par defaut: `3`, bornee entre `1` et `5`. Le nom est historique: le frontend TV actuel ne pilote pas de lecteur d'avance.
+- `MQ_MERCURE_TOPIC_BASE` (optionnel)
 
 ## Mercure
 
