@@ -42,7 +42,7 @@ La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lo
 La migration `008` ajoute `mq_lobbies.answer_similarity_threshold`, seuil de correspondance entre `70` et `100`, avec `100` comme comportement strict historique.
 La migration `009` ajoute `mq_player_suggestions` pour les corrections/alias/nouvelles musiques proposes par les joueurs et `mq_round_suggestion_holds` pour bloquer temporairement le passage a la manche suivante pendant qu'un joueur remplit une proposition.
 La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre une television/ecran dedie et un salon MelodyQuest. Le code TV expire rapidement tant qu'il est en attente, puis la liaison est prolongee pendant que la TV synchronise le salon.
-La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir plusieurs musiques avant le vote "suivant" afin que la TV puisse precharger YouTube pendant le lobby ou la manche precedente.
+La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir plusieurs musiques avant le vote "suivant" afin que la TV puisse precharger YouTube pendant la manche precedente sans recalculer le tirage au dernier moment.
 
 ## Import catalogue CSV
 
@@ -111,7 +111,7 @@ Mode TV public:
 
 - `POST action=createTvPairing`: cree un code court et un `device_token` pour l'ecran TV
 - `GET action=getTvPairing&device_token=...`: permet a la TV de savoir si son code est encore en attente ou lie
-- `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur; prepare aussi la file `upcoming_tracks` pour la TV.
+- `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur; prepare aussi la file `upcoming_tracks` pour la TV. La file peut exister des l'attente du lobby, mais le frontend TV ne lance pas de lecteur YouTube hors manche pour eviter les blocages d'autoplay.
 - `POST action=markTvRoundReady`: appele par la TV quand le lecteur YouTube courant joue en muet; si une manche attend encore son depart, l'API rapproche `started_at` et publie un snapshot Mercure pour resynchroniser les joueurs.
 
 Flux temps reel:
