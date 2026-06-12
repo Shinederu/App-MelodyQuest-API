@@ -979,66 +979,6 @@ class LobbyService
         }
     }
 
-    public function releaseRoundStartForTv(int $lobbyId, int $roundId, int $trackId): array
-    {
-        if ($lobbyId <= 0 || $roundId <= 0 || $trackId <= 0) {
-            throw new RuntimeException('Manche TV invalide');
-        }
-
-        $this->cleanupStaleOwnerLobbies();
-        $this->db->beginTransaction();
-        try {
-            $this->requireLobbyForUpdate($lobbyId);
-            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
-            if (!$round || (int)$round['id'] !== $roundId) {
-                throw new RuntimeException('Manche TV introuvable');
-            }
-            if ((int)$round['track_id'] !== $trackId) {
-                throw new RuntimeException('La musique TV ne correspond pas à la manche');
-            }
-
-            $released = false;
-            if ($this->isRoundWaitingToStart($round)) {
-                $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . MQ_TV_READY_START_LEAD_SECONDS . ' SECOND)';
-                $updateRound = $this->db->prepare(
-                    'UPDATE mq_rounds
-                     SET started_at = ' . $startExpression . '
-                     WHERE id = :id
-                       AND status = "running"
-                       AND started_at > ' . $startExpression
-                );
-                $updateRound->execute(['id' => $roundId]);
-                $released = $updateRound->rowCount() > 0;
-
-                if ($released) {
-                    $this->db->prepare(
-                        'UPDATE mq_lobbies
-                         SET playback_started_at = (SELECT started_at FROM mq_rounds WHERE id = :round_id),
-                             sync_revision = sync_revision + 1
-                         WHERE id = :lobby_id'
-                    )->execute([
-                        'round_id' => $roundId,
-                        'lobby_id' => $lobbyId,
-                    ]);
-                }
-            }
-
-            $this->db->commit();
-
-            return [
-                'released' => $released,
-                'lobby_id' => $lobbyId,
-                'round_id' => $roundId,
-                'track_id' => $trackId,
-            ];
-        } catch (Throwable $e) {
-            if ($this->db->inTransaction()) {
-                $this->db->rollBack();
-            }
-            throw $e;
-        }
-    }
-
     public function getScoreboard(int $userId, int $lobbyId): array
     {
         $this->touchLobbyMember($lobbyId, $userId);
@@ -2025,7 +1965,7 @@ class LobbyService
 
     private function createRunningRoundLocked(int $lobbyId, int $trackId, int $roundNumber): void
     {
-        $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . $this->getRoundStartDelaySeconds($lobbyId) . ' SECOND)';
+        $startExpression = 'DATE_ADD(NOW(3), INTERVAL ' . MQ_ROUND_PRELOAD_SECONDS . ' SECOND)';
         $insert = $this->db->prepare(
             'INSERT INTO mq_rounds (lobby_id, round_number, track_id, started_at, status)
              VALUES (:lobby_id, :round_number, :track_id, ' . $startExpression . ', "running")'
@@ -2053,28 +1993,6 @@ class LobbyService
 
         $this->clearRoundPreloadsForTrack($lobbyId, $trackId);
         $this->resetLobbyReadyVotes($lobbyId);
-    }
-
-    private function getRoundStartDelaySeconds(int $lobbyId): int
-    {
-        return $this->hasActiveTvPairing($lobbyId)
-            ? MQ_TV_ROUND_PRELOAD_MAX_WAIT_SECONDS
-            : MQ_ROUND_PRELOAD_SECONDS;
-    }
-
-    private function hasActiveTvPairing(int $lobbyId): bool
-    {
-        $stmt = $this->db->prepare(
-            'SELECT 1
-             FROM mq_tv_pairings
-             WHERE lobby_id = :lobby_id
-               AND status = "linked"
-               AND expires_at > NOW(3)
-             LIMIT 1'
-        );
-        $stmt->execute(['lobby_id' => $lobbyId]);
-
-        return (bool)$stmt->fetchColumn();
     }
 
     private function transitionRoundToReveal(int $lobbyId, int $roundId, bool $unlockNextVoteImmediately = false, ?array $lobby = null): bool

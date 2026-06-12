@@ -103,22 +103,6 @@ class TvService
         ];
     }
 
-    public function markRoundReady(string $deviceToken, int $roundId, int $trackId): array
-    {
-        $this->cleanupExpiredPairings();
-        $pairing = $this->requirePairingByToken($deviceToken);
-        if ((string)$pairing['status'] !== 'linked' || empty($pairing['lobby_id'])) {
-            throw new RuntimeException('TV non liée à un salon');
-        }
-
-        $this->touchPairing($deviceToken, true);
-        $lobbyId = (int)$pairing['lobby_id'];
-        $result = $this->lobbyService->releaseRoundStartForTv($lobbyId, $roundId, $trackId);
-        $result['pairing'] = $this->formatPairing($this->requirePairingByToken($deviceToken));
-
-        return $result;
-    }
-
     private function formatPairing(array $pairing): array
     {
         $result = [
