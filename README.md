@@ -6,8 +6,8 @@ MelodyQuest est un blindtest multijoueur base sur une authentification centralis
 
 Le projet MelodyQuest est mis en pause dans un etat stable de reprise. Les derniers commits applicatifs lies a MelodyQuest avant cette pause sont:
 
-- frontend `MelodyQuest`: `295dd11 Restore basic MelodyQuest TV player`;
-- backend `API`: `2f468a9 Remove MelodyQuest TV ready playback flow`.
+- frontend `App-MelodyQuest`: `295dd11 Restore basic MelodyQuest TV player`;
+- backend `App-MelodyQuest-API`: `28dbdda Remove MelodyQuest TV ready playback flow`.
 
 Le mode TV public reste actif, mais il utilise de nouveau un lecteur YouTube iframe simple cote frontend. L'action experimentale `markTvRoundReady`, le demarrage accelere par signal "TV prete" et les constantes `MQ_TV_ROUND_PRELOAD_MAX_WAIT_SECONDS` / `MQ_TV_READY_START_LEAD_SECONDS` ont ete retires. Les tables `mq_tv_pairings` et `mq_round_preloads` restent utiles: la premiere lie une TV a un salon, la seconde prepare la file de pistes a venir cote backend.
 
@@ -79,7 +79,8 @@ Commandes utiles:
 Base URL de production:
 
 - `https://api.shinederu.ch/melodyquest/`
-- Dossier serveur: `API/melodyquest/`
+- Dossier source: `P:\DEV\GitHub\App-MelodyQuest-API`
+- Dossier runtime: `P:\PROD\API\melodyquest`
 
 Authentifie:
 
