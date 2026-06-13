@@ -1187,6 +1187,10 @@ class LobbyService
 
     private function cleanupStaleOwnerLobbies(): void
     {
+        if (!$this->shouldRunStaleOwnerCleanup()) {
+            return;
+        }
+
         $timeout = max(1, (int)MQ_OWNER_STALE_TIMEOUT_SECONDS);
         $stmt = $this->db->prepare(
             'SELECT l.id
@@ -1204,12 +1208,26 @@ class LobbyService
             return;
         }
 
-        $delete = $this->db->prepare('DELETE FROM mq_lobbies WHERE id = :id');
-        foreach ($lobbyIds as $lobbyId) {
-            $delete->execute(['id' => $lobbyId]);
+        $placeholders = implode(',', array_fill(0, count($lobbyIds), '?'));
+        $delete = $this->db->prepare('DELETE FROM mq_lobbies WHERE id IN (' . $placeholders . ')');
+        foreach ($lobbyIds as $index => $lobbyId) {
+            $delete->bindValue($index + 1, $lobbyId, PDO::PARAM_INT);
         }
+        $delete->execute();
     }
 
+    private function shouldRunStaleOwnerCleanup(): bool
+    {
+        $file = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'melodyquest-stale-owner-cleanup.timestamp';
+        $now = time();
+        $lastRun = is_file($file) ? (int)@file_get_contents($file) : 0;
+        if ($lastRun > 0 && ($now - $lastRun) < 10) {
+            return false;
+        }
+
+        @file_put_contents($file, (string)$now, LOCK_EX);
+        return true;
+    }
 
     private function computeLobbyRevision(int $lobbyId): int
     {
@@ -2453,6 +2471,7 @@ class LobbyService
         $isAcceptingAnswers = $this->isRoundAnswerWindowOpen($lobby, $round);
         $isWaitingToStart = $this->isRoundWaitingToStart($round);
         $isRevealVisible = (!$isWaitingToStart && !$isAcceptingAnswers) || strtolower((string)($round['status'] ?? '')) === 'reveal';
+        $showTrackCategory = !empty($lobby['show_track_category']);
         $this->cleanupExpiredSuggestionHolds();
 
         return [
@@ -2478,7 +2497,7 @@ class LobbyService
                 'is_waiting_to_start' => $isWaitingToStart,
                 'starts_in_seconds' => max(0.0, $this->resolveRoundTimestamp($round, 'started_at') - microtime(true)),
                 'is_reveal_visible' => $isRevealVisible,
-                'track' => $track ?: null,
+                'track' => $this->redactTrackSnapshot($track ?: null, $isRevealVisible, $showTrackCategory),
             ],
             'next_round_number' => $nextTrack['round_number'] ?? null,
             'next_track' => $nextTrack,
@@ -2503,6 +2522,7 @@ class LobbyService
                 continue;
             }
 
+            $track = $this->redactTrackSnapshot($track, false, false) ?? [];
             $track['round_number'] = $roundNumber;
             $items[] = $track;
         }
@@ -2559,6 +2579,29 @@ class LobbyService
         $track = $trackStmt->fetch();
 
         return $track ? $this->hydrateTrackRow($track) : null;
+    }
+
+    private function redactTrackSnapshot(?array $track, bool $includeSolution, bool $includeCategory): ?array
+    {
+        if (!$track) {
+            return null;
+        }
+
+        if ($includeSolution) {
+            return $track;
+        }
+
+        $redacted = [
+            'youtube_video_id' => $track['youtube_video_id'] ?? null,
+            'start_offset_seconds' => isset($track['start_offset_seconds']) ? (int)$track['start_offset_seconds'] : 0,
+        ];
+
+        if ($includeCategory) {
+            $redacted['category_id'] = isset($track['category_id']) ? (int)$track['category_id'] : null;
+            $redacted['category_name'] = $track['category_name'] ?? null;
+        }
+
+        return $redacted;
     }
 
     private function buildScoreboardSnapshot(int $lobbyId): array

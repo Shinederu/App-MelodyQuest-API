@@ -2,7 +2,7 @@
 
 function get_action(string $method, array $body): ?string
 {
-    if ($method === 'GET') {
+    if ($method === 'GET' || $method === 'DELETE') {
         return $_GET['action'] ?? null;
     }
 
@@ -10,7 +10,7 @@ function get_action(string $method, array $body): ?string
         return $body['action'];
     }
 
-    return $_REQUEST['action'] ?? null;
+    return null;
 }
 
 function get_body(): array
@@ -21,14 +21,15 @@ function get_body(): array
 
     $raw = file_get_contents('php://input');
     if (is_string($raw) && $raw !== '') {
+        $contentType = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? ''));
+        if (!str_contains($contentType, 'application/json')) {
+            return [];
+        }
+
         $decoded = json_decode($raw, true);
         if (is_array($decoded)) {
             return $decoded;
         }
-    }
-
-    if (!empty($_POST) && is_array($_POST)) {
-        return $_POST;
     }
 
     return [];

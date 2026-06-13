@@ -20,7 +20,7 @@ function mq_normalize_youtube_video_id(?string $value): string
     $path = trim((string)($parts['path'] ?? ''), '/');
     parse_str((string)($parts['query'] ?? ''), $query);
 
-    if ($host !== '' && str_contains($host, 'youtu.be')) {
+    if ($host === 'youtu.be' || str_ends_with($host, '.youtu.be')) {
         return mq_sanitize_youtube_video_id(mq_first_path_segment($path));
     }
 

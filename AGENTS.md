@@ -49,8 +49,8 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Topics:
   - `https://api.shinederu.ch/melodyquest/topics/public-lobbies`
   - `https://api.shinederu.ch/melodyquest/topics/lobbies/{LOBBY_CODE}`
-- Les endpoints SSE historiques restent des fallbacks de transition.
-- Toute information temps reel doit pouvoir etre reconstruite via API HTTP.
+- Il n'y a pas de fallback SSE supporte dans l'API actuelle.
+- Toute information temps reel doit pouvoir etre reconstruite via API HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`).
 
 ## Etat TV a preserver
 

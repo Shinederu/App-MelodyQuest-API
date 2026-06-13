@@ -17,8 +17,10 @@ class AuthMiddleware
         $stmt = $db->prepare(
             'SELECT s.user_id
              FROM auth_sessions s
+             JOIN users u ON u.id = s.user_id
              WHERE s.id = :sid
                AND s.expires_at > NOW()
+               AND COALESCE(u.is_banned, 0) = 0
              LIMIT 1'
         );
         $stmt->execute(['sid' => $sid]);
@@ -38,8 +40,10 @@ class AuthMiddleware
         $stmt = $db->prepare(
             'SELECT s.user_id
              FROM auth_sessions s
+             JOIN users u ON u.id = s.user_id
              WHERE s.id = :sid
                AND s.expires_at > NOW()
+               AND COALESCE(u.is_banned, 0) = 0
              LIMIT 1'
         );
         $stmt->execute(['sid' => $sid]);

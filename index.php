@@ -266,7 +266,9 @@ try {
 } catch (RuntimeException $e) {
     json_error($e->getMessage(), 400);
 } catch (PDOException $e) {
-    json_error('Database Error: ' . $e->getMessage(), 500);
+    error_log('MelodyQuest database error: ' . $e->getMessage());
+    json_error('Erreur serveur', 500);
 } catch (Throwable $e) {
-    json_error('Unknown Error: ' . $e->getMessage(), 500);
+    error_log('MelodyQuest unexpected error: ' . $e->getMessage());
+    json_error('Erreur serveur', 500);
 }

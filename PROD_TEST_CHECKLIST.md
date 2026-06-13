@@ -38,24 +38,24 @@ Configurer (PHP runtime):
 ## Smoke tests API (authentifie)
 
 1. Login via API auth (cookie `sid` present).
-2. `POST /melodyquest/?action=createLobby`
-3. `POST /melodyquest/?action=joinLobby`
+2. `POST /melodyquest/` avec JSON `{"action":"createLobby", ...}`
+3. `POST /melodyquest/` avec JSON `{"action":"joinLobby", ...}`
 4. `GET /melodyquest/?action=getLobbyByCode&lobby_code=...`
 5. `GET /melodyquest/?action=listCategories`
-6. `POST /melodyquest/?action=addTrackToPool`
-7. `POST /melodyquest/?action=startRound`
-8. `POST /melodyquest/?action=submitAnswer`
-9. `POST /melodyquest/?action=revealRound`
-10. `POST /melodyquest/?action=finishRound`
+6. `POST /melodyquest/` avec JSON `{"action":"addTrackToPool", ...}`
+7. `POST /melodyquest/` avec JSON `{"action":"startRound", ...}`
+8. `POST /melodyquest/` avec JSON `{"action":"submitAnswer", ...}`
+9. `POST /melodyquest/` avec JSON `{"action":"revealRound", ...}`
+10. `POST /melodyquest/` avec JSON `{"action":"finishRound", ...}`
 11. `GET /melodyquest/?action=getScoreboard&lobby_id=...`
 12. `GET /melodyquest/?action=getLobbyByCode&lobby_code=...` retourne `data.realtime.transport=mercure` si le hub est configure.
 13. `GET /melodyquest/?action=listPublicLobbies` retourne `data.realtime.transport=mercure` si le hub est configure.
 14. `GET https://mercure.shinederu.ch/.well-known/mercure?topic=...` recoit bien les updates correspondants.
-15. En absence d'env Mercure cote PHP, le transport retombe proprement sur `sse`.
-16. `POST /melodyquest/?action=createTvPairing` cree un code TV.
+15. En absence ou erreur Mercure, le frontend peut resynchroniser l'etat par HTTP sans rester bloque.
+16. `POST /melodyquest/` avec JSON `{"action":"createTvPairing"}` cree un code TV.
 17. `GET /melodyquest/?action=getTvPairing&device_token=...` retourne le statut du code TV.
 18. `GET /melodyquest/?action=getTvState&device_token=...` retourne le snapshot TV une fois lie.
-19. `POST /melodyquest/?action=markTvRoundReady` doit etre absent/refuse: cette action n'est plus supportee.
+19. `POST /melodyquest/` avec JSON `{"action":"markTvRoundReady"}` doit etre refuse: cette action n'est plus supportee.
 
 ## Smoke tests frontend
 
@@ -80,7 +80,7 @@ Configurer (PHP runtime):
 - Le score se met a jour apres reponse.
 - Le round state et le playback state sont coherents entre joueurs.
 - Le mode Mercure fonctionne sur `mercure.shinederu.ch`.
-- Si Mercure n'est pas encore disponible cote PHP, le fallback SSE reste operationnel sans blocage UI.
+- Si Mercure n'est pas disponible, les appels HTTP de resynchronisation restent operationnels sans blocage UI.
 - Le mode TV ne bloque pas le demarrage des manches meme si YouTube bufferise.
 
 

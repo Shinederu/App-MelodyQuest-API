@@ -105,11 +105,17 @@ Base URL de production:
 - Dossier source: `P:\DEV\GitHub\App-MelodyQuest-API`
 - Dossier runtime: `P:\PROD\API\melodyquest`
 
+Les actions `POST` et `PUT` doivent etre envoyees en JSON (`Content-Type: application/json`) avec la cle `action` dans le corps. Les actions `GET` et `DELETE` lisent `action` depuis la query string.
+
 Authentifie:
 
 - `POST action=createLobby`
 - `POST action=joinLobby`
 - `POST action=leaveLobby`
+- `POST action=touchLobby`
+- `POST action=kickPlayer`
+- `POST action=deleteLobby`
+- `POST action=resetLobbyForReplay`
 - `PUT action=updateLobbyConfig`
 - `POST action=syncPlayback`
 - `GET action=getLobbyByCode&lobby_code=...`
@@ -136,9 +142,10 @@ Authentifie:
 
 `updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs presents.
-`holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu. `voteNextRound` refuse d'avancer tant qu'un verrou actif existe.
-`submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video.
-`getRoundState` renvoie `round.track.category_id`, `round.track.category_name`, `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `early_reveal_votes` et `suggestion_holds` pour l'interface de jeu. `next_track` sert uniquement au prechargement anticipe de la manche suivante.
+`voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs presents. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
+`holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu.
+`submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video. Anti-abus: 5 suggestions maximum par 10 minutes et par utilisateur authentifie ou IP anonyme.
+`getRoundState` renvoie `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `upcoming_tracks`, `early_reveal_votes` et `suggestion_holds` pour l'interface de jeu. Avant revelation, `round.track` ne contient que les donnees necessaires a la lecture (`youtube_video_id`, `start_offset_seconds`) et, si l'option du salon l'autorise, la categorie. Les champs solution (`title`, `artist`, `family_name`, alias, etc.) ne sont renvoyes qu'une fois la reponse revelee. `next_track` et `upcoming_tracks` restent toujours expurges des champs solution.
 `submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
 `linkTvPairing` lie un code TV en attente au salon de l'utilisateur connecte; l'utilisateur doit deja etre membre du salon.
 
@@ -170,9 +177,8 @@ Ne pas ajouter de logique metier basee sur le libelle d'un role configurable.
 Flux temps reel:
 
 - priorite: hub Mercure `https://mercure.shinederu.ch/.well-known/mercure`
-- fallback de transition: endpoints SSE historiques
-- `GET action=streamLobby&lobby_id=...`
-- `GET action=streamPublicLobbies`
+- resynchronisation possible par API HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`)
+- pas de fallback SSE supporte dans l'API actuelle
 
 Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin global):
 
@@ -184,6 +190,7 @@ Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin glob
 - `PUT action=updateFamily`
 - `PUT action=updateTrack`
 - `POST action=validateTrack`
+- `POST action=unvalidateTrack`
 - `GET action=listSuggestions&status=pending|reviewed|rejected|all`
 - `POST action=updateSuggestionStatus`
 - `DELETE action=deleteCategory`
@@ -219,7 +226,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - Topic lobbies publics: `https://api.shinederu.ch/melodyquest/topics/public-lobbies`
 - Topic lobby prive: `https://api.shinederu.ch/melodyquest/topics/lobbies/{LOBBY_CODE}`
 - Les reponses `listPublicLobbies` et `getLobbyByCode` exposent un bloc `data.realtime`
-- Le frontend tente Mercure d'abord, puis retombe sur le SSE historique si la config hub/JWT n'est pas encore disponible
+- Le frontend tente Mercure d'abord, puis resynchronise par HTTP si la connexion temps reel est indisponible
 
 Les topics doivent pouvoir etre resynchronises par API HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`). Mercure ne sert pas a executer des commandes critiques.
 

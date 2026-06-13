@@ -5,6 +5,9 @@ require_once __DIR__ . '/../utils/youtube.php';
 
 class SuggestionService
 {
+    private const SUBMIT_RATE_LIMIT_MAX = 5;
+    private const SUBMIT_RATE_LIMIT_WINDOW_SECONDS = 600;
+
     private PDO $db;
 
     public function __construct()
@@ -14,6 +17,8 @@ class SuggestionService
 
     public function submit(?int $userId, array $payload): array
     {
+        $this->enforceSubmitRateLimit($userId);
+
         $type = (string)($payload['suggestion_type'] ?? 'track_correction');
         if (!in_array($type, ['track_correction', 'new_track'], true)) {
             throw new RuntimeException('Type de suggestion invalide');
@@ -140,6 +145,60 @@ class SuggestionService
         $row = $stmt->fetch();
 
         return $row ?: null;
+    }
+
+    private function enforceSubmitRateLimit(?int $userId): void
+    {
+        $key = $this->getRateLimitKey($userId);
+        if ($key === '') {
+            return;
+        }
+
+        $dir = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'melodyquest-rate-limits';
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return;
+        }
+
+        $file = $dir . DIRECTORY_SEPARATOR . 'suggestion-' . hash('sha256', $key) . '.json';
+        $now = time();
+        $events = [];
+        if (is_file($file)) {
+            $decoded = json_decode((string)@file_get_contents($file), true);
+            if (is_array($decoded)) {
+                $events = array_values(array_filter(
+                    array_map('intval', $decoded),
+                    static fn(int $timestamp): bool => $timestamp > $now - self::SUBMIT_RATE_LIMIT_WINDOW_SECONDS
+                ));
+            }
+        }
+
+        if (count($events) >= self::SUBMIT_RATE_LIMIT_MAX) {
+            throw new RuntimeException('Trop de suggestions envoyees. Reessaie dans quelques minutes.');
+        }
+
+        $events[] = $now;
+        $encoded = json_encode($events);
+        if (is_string($encoded)) {
+            @file_put_contents($file, $encoded, LOCK_EX);
+        }
+    }
+
+    private function getRateLimitKey(?int $userId): string
+    {
+        if ($userId !== null && $userId > 0) {
+            return 'user:' . $userId;
+        }
+
+        $forwardedFor = (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
+        $ip = trim(explode(',', $forwardedFor)[0] ?? '');
+        if ($ip === '') {
+            $ip = trim((string)($_SERVER['HTTP_X_REAL_IP'] ?? ''));
+        }
+        if ($ip === '') {
+            $ip = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+        }
+
+        return $ip !== '' ? 'ip:' . $ip : '';
     }
 
     private function cleanText($value, int $maxLength): ?string
