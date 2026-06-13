@@ -8,6 +8,8 @@ class CatalogService
     private PDO $db;
     private ?bool $familyAliasesTableExists = null;
     private ?bool $youtubeUrlColumnExists = null;
+    private static ?bool $familyAliasesTableExistsCache = null;
+    private static ?bool $youtubeUrlColumnExistsCache = null;
 
     public function __construct()
     {
@@ -936,6 +938,11 @@ class CatalogService
 
     private function hasFamilyAliasesTable(): bool
     {
+        if (self::$familyAliasesTableExistsCache !== null) {
+            $this->familyAliasesTableExists = self::$familyAliasesTableExistsCache;
+            return self::$familyAliasesTableExistsCache;
+        }
+
         if ($this->familyAliasesTableExists !== null) {
             return $this->familyAliasesTableExists;
         }
@@ -949,11 +956,17 @@ class CatalogService
         );
 
         $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
+        self::$familyAliasesTableExistsCache = $this->familyAliasesTableExists;
         return $this->familyAliasesTableExists;
     }
 
     private function hasYoutubeUrlColumn(): bool
     {
+        if (self::$youtubeUrlColumnExistsCache !== null) {
+            $this->youtubeUrlColumnExists = self::$youtubeUrlColumnExistsCache;
+            return self::$youtubeUrlColumnExistsCache;
+        }
+
         if ($this->youtubeUrlColumnExists !== null) {
             return $this->youtubeUrlColumnExists;
         }
@@ -968,6 +981,7 @@ class CatalogService
         );
 
         $this->youtubeUrlColumnExists = (bool)$stmt->fetchColumn();
+        self::$youtubeUrlColumnExistsCache = $this->youtubeUrlColumnExists;
         return $this->youtubeUrlColumnExists;
     }
 

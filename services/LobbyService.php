@@ -9,6 +9,8 @@ class LobbyService
     private PDO $db;
     private ?bool $familyAliasesTableExists = null;
     private ?bool $youtubeUrlColumnExists = null;
+    private static ?bool $familyAliasesTableExistsCache = null;
+    private static ?bool $youtubeUrlColumnExistsCache = null;
 
     public function __construct()
     {
@@ -1734,12 +1736,22 @@ class LobbyService
             OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
         )';
 
+        $baseSql = 'FROM mq_tracks t
+                    JOIN mq_families f ON f.id = t.family_id
+                    WHERE ' . implode(' AND ', $where);
+
+        $countStmt = $this->db->prepare('SELECT COUNT(*) AS c ' . $baseSql);
+        $countStmt->execute($params);
+        $count = (int)($countStmt->fetch()['c'] ?? 0);
+        if ($count <= 0) {
+            return null;
+        }
+
+        $offset = random_int(0, $count - 1);
         $sql = 'SELECT t.id
-                FROM mq_tracks t
-                JOIN mq_families f ON f.id = t.family_id
-                WHERE ' . implode(' AND ', $where) . '
-                ORDER BY RAND()
-                LIMIT 1';
+                ' . $baseSql . '
+                ORDER BY t.id ASC
+                LIMIT 1 OFFSET ' . $offset;
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
@@ -2395,6 +2407,11 @@ class LobbyService
 
     private function hasFamilyAliasesTable(): bool
     {
+        if (self::$familyAliasesTableExistsCache !== null) {
+            $this->familyAliasesTableExists = self::$familyAliasesTableExistsCache;
+            return self::$familyAliasesTableExistsCache;
+        }
+
         if ($this->familyAliasesTableExists !== null) {
             return $this->familyAliasesTableExists;
         }
@@ -2408,6 +2425,7 @@ class LobbyService
         );
 
         $this->familyAliasesTableExists = (bool)$stmt->fetchColumn();
+        self::$familyAliasesTableExistsCache = $this->familyAliasesTableExists;
         return $this->familyAliasesTableExists;
     }
 
@@ -2751,6 +2769,11 @@ class LobbyService
 
     private function hasYoutubeUrlColumn(): bool
     {
+        if (self::$youtubeUrlColumnExistsCache !== null) {
+            $this->youtubeUrlColumnExists = self::$youtubeUrlColumnExistsCache;
+            return self::$youtubeUrlColumnExistsCache;
+        }
+
         if ($this->youtubeUrlColumnExists !== null) {
             return $this->youtubeUrlColumnExists;
         }
@@ -2765,6 +2788,7 @@ class LobbyService
         );
 
         $this->youtubeUrlColumnExists = (bool)$stmt->fetchColumn();
+        self::$youtubeUrlColumnExistsCache = $this->youtubeUrlColumnExists;
         return $this->youtubeUrlColumnExists;
     }
 
