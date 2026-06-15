@@ -55,7 +55,8 @@ class LobbyController
             json_error('lobby_id requis', 400);
         }
 
-        $data = $this->service->touchLobbyPresence($userId, $lobbyId);
+        $presenceStatus = (string)($payload['presence_status'] ?? 'active');
+        $data = $this->service->touchLobbyPresence($userId, $lobbyId, $presenceStatus);
         $this->refreshLobbyRealtimeAuthorization($lobbyId);
         json_success('Presence mise a jour', $data);
     }

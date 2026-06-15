@@ -113,7 +113,7 @@ class CatalogService
         if ($familyId) {
             $stmt = $this->db->prepare(
                 'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                        t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds,
+                        t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds,
                         t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
                  FROM mq_tracks t
                  JOIN mq_families f ON f.id = t.family_id
@@ -127,7 +127,7 @@ class CatalogService
 
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds,
+                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds,
                     t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
@@ -143,7 +143,7 @@ class CatalogService
 
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds,
+                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds,
                     t.is_active, t.is_validated, t.created_at, t.updated_at,
                     creator.username AS created_by_username
              FROM mq_tracks t
@@ -731,6 +731,7 @@ class CatalogService
 
         $row['youtube_video_id'] = $videoId;
         $row['youtube_url'] = mq_build_youtube_watch_url($videoId);
+        $row['start_offset_seconds'] = max(0, (int)($row['start_offset_seconds'] ?? 0));
 
         return $row;
     }

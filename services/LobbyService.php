@@ -115,9 +115,15 @@ class LobbyService
         }
 
         $lobbyId = (int)$lobby['id'];
+        $alreadyKnown = $this->isKnownLobbyPlayer($lobbyId, $userId);
         $alreadyMember = $this->isLobbyMember($lobbyId, $userId);
         if (!$alreadyMember) {
-            $countStmt = $this->db->prepare('SELECT COUNT(*) AS c FROM mq_lobby_players WHERE lobby_id = :id');
+            $countStmt = $this->db->prepare(
+                'SELECT COUNT(*) AS c
+                 FROM mq_lobby_players
+                 WHERE lobby_id = :id
+                   AND presence_status <> "removed"'
+            );
             $countStmt->execute(['id' => $lobbyId]);
             $count = (int)$countStmt->fetch()['c'];
             if ($count >= (int)$lobby['max_players']) {
@@ -128,14 +134,20 @@ class LobbyService
         $upsert = $this->db->prepare(
             'INSERT INTO mq_lobby_players (lobby_id, user_id, role, is_ready, score)
              VALUES (:lobby_id, :user_id, "player", 0, 0)
-             ON DUPLICATE KEY UPDATE last_seen_at = NOW()'
+             ON DUPLICATE KEY UPDATE
+                last_seen_at = NOW(),
+                presence_status = "active",
+                removed_at = NULL,
+                removed_by = NULL'
         );
         $upsert->execute([
             'lobby_id' => $lobbyId,
             'user_id' => $userId,
         ]);
 
-        if (!$alreadyMember) {
+        $this->syncLobbyPlayerRoles($lobbyId);
+
+        if (!$alreadyKnown || !$alreadyMember) {
             $this->touchLobbyActivity($lobbyId);
         }
 
@@ -147,12 +159,24 @@ class LobbyService
         $lobby = $this->requireLobby($lobbyId);
         $this->requireLobbyMember($lobbyId, $userId);
 
-        $del = $this->db->prepare('DELETE FROM mq_lobby_players WHERE lobby_id = :lobby_id AND user_id = :user_id');
-        $del->execute(['lobby_id' => $lobbyId, 'user_id' => $userId]);
+        $leave = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET presence_status = "removed",
+                 is_ready = 0,
+                 removed_at = NOW(3),
+                 removed_by = NULL
+             WHERE lobby_id = :lobby_id AND user_id = :user_id'
+        );
+        $leave->execute(['lobby_id' => $lobbyId, 'user_id' => $userId]);
 
         if ((int)$lobby['owner_user_id'] === $userId) {
             $nextStmt = $this->db->prepare(
-                'SELECT user_id FROM mq_lobby_players WHERE lobby_id = :lobby_id ORDER BY joined_at ASC LIMIT 1'
+                'SELECT user_id
+                 FROM mq_lobby_players
+                 WHERE lobby_id = :lobby_id
+                   AND presence_status <> "removed"
+                 ORDER BY joined_at ASC
+                 LIMIT 1'
             );
             $nextStmt->execute(['lobby_id' => $lobbyId]);
             $next = $nextStmt->fetch();
@@ -162,7 +186,10 @@ class LobbyService
                 $upd = $this->db->prepare('UPDATE mq_lobbies SET owner_user_id = :owner WHERE id = :id');
                 $upd->execute(['owner' => $newOwner, 'id' => $lobbyId]);
                 $role = $this->db->prepare(
-                    'UPDATE mq_lobby_players SET role = CASE WHEN user_id = :owner THEN "owner" ELSE "player" END WHERE lobby_id = :lobby_id'
+                    'UPDATE mq_lobby_players
+                     SET role = CASE WHEN user_id = :owner THEN "owner" ELSE "player" END
+                     WHERE lobby_id = :lobby_id
+                       AND presence_status <> "removed"'
                 );
                 $role->execute(['owner' => $newOwner, 'lobby_id' => $lobbyId]);
             } else {
@@ -180,13 +207,18 @@ class LobbyService
         ];
     }
 
-    public function touchLobbyPresence(int $userId, int $lobbyId): array
+    public function touchLobbyPresence(int $userId, int $lobbyId, string $presenceStatus = 'active'): array
     {
         $this->requireLobbyMember($lobbyId, $userId);
-        $this->touchLobbyMember($lobbyId, $userId);
+        $status = $this->normalizePresenceStatus($presenceStatus);
+        $changed = $this->touchLobbyMember($lobbyId, $userId, $status);
         $this->cleanupStaleOwnerLobbies();
 
-        return ['ok' => true];
+        if ($changed) {
+            $this->touchLobbyActivity($lobbyId);
+        }
+
+        return ['ok' => true, 'presence_status' => $status];
     }
 
     public function kickPlayer(int $ownerUserId, int $lobbyId, int $targetUserId): array
@@ -204,11 +236,17 @@ class LobbyService
         $this->requireLobbyMember($lobbyId, $targetUserId);
 
         $stmt = $this->db->prepare(
-            'DELETE FROM mq_lobby_players WHERE lobby_id = :lobby_id AND user_id = :user_id'
+            'UPDATE mq_lobby_players
+             SET presence_status = "removed",
+                 is_ready = 0,
+                 removed_at = NOW(3),
+                 removed_by = :removed_by
+             WHERE lobby_id = :lobby_id AND user_id = :user_id'
         );
         $stmt->execute([
             'lobby_id' => $lobbyId,
             'user_id' => $targetUserId,
+            'removed_by' => $ownerUserId,
         ]);
 
         $this->touchLobbyActivity($lobbyId);
@@ -441,7 +479,7 @@ class LobbyService
 
     public function listTrackPool(int $userId, int $lobbyId): array
     {
-        $this->touchLobbyMember($lobbyId, $userId);
+        $this->touchLobbyMemberSeen($lobbyId, $userId);
         $this->cleanupStaleOwnerLobbies();
 
         $this->requireLobby($lobbyId);
@@ -600,7 +638,7 @@ class LobbyService
                 'user_id' => $userId,
             ]);
 
-            $playersCount = $this->countLobbyPlayers($lobbyId);
+            $playersCount = $this->countEligibleLobbyPlayers($lobbyId);
             $requiredCount = max(1, (int)ceil($playersCount * 0.5));
             $readyCount = $this->countReadyVotes($lobbyId);
             $advanced = false;
@@ -703,9 +741,9 @@ class LobbyService
                 'user_id' => $userId,
             ]);
 
-            $playersCount = $this->countLobbyPlayers($lobbyId);
+            $playersCount = $this->countEligibleLobbyPlayers($lobbyId);
             $requiredCount = max(1, $playersCount);
-            $votesCount = $this->countEarlyRevealVotes((int)$round['id']);
+            $votesCount = $this->countEarlyRevealVotes((int)$round['id'], $lobbyId);
             $revealed = false;
 
             if ($votesCount >= $requiredCount) {
@@ -840,6 +878,15 @@ class LobbyService
                 'score_awarded' => $scoreAwarded,
             ]);
 
+            $this->recordRoundAnswerAttempt(
+                (int)$round['id'],
+                $userId,
+                $guessTitle,
+                $guessArtist,
+                $isCorrect,
+                $scoreAwarded
+            );
+
             if ($delta !== 0) {
                 $scoreUpd = $this->db->prepare(
                     'UPDATE mq_lobby_players
@@ -854,8 +901,8 @@ class LobbyService
             }
 
             if ($scoreAwarded > 0) {
-                $playersCount = $this->countLobbyPlayers($lobbyId);
-                $solvedPlayersCount = $this->countSolvedPlayersForRound((int)$lockedRound['id']);
+                $playersCount = $this->countEligibleLobbyPlayers($lobbyId);
+                $solvedPlayersCount = $this->countSolvedPlayersForRound((int)$lockedRound['id'], $lobbyId);
                 if ($playersCount > 0 && $solvedPlayersCount >= $playersCount) {
                     $autoRevealed = $this->transitionRoundToReveal($lobbyId, (int)$lockedRound['id'], false, $lockedLobby);
                 }
@@ -876,6 +923,7 @@ class LobbyService
             'is_correct_artist' => (bool)$isCorrectArtist,
             'auto_revealed' => $autoRevealed,
             'answer_similarity_threshold' => $answerSimilarityThreshold,
+            'track' => $isCorrect ? $this->getTrackSnapshotById((int)$round['track_id']) : null,
         ];
     }
 
@@ -935,12 +983,12 @@ class LobbyService
 
     public function getRoundState(int $userId, int $lobbyId): array
     {
-        $this->touchLobbyMember($lobbyId, $userId);
+        $this->touchLobbyMemberSeen($lobbyId, $userId);
         $this->cleanupStaleOwnerLobbies();
 
         $this->requireLobbyMember($lobbyId, $userId);
 
-        return $this->buildRoundStateSnapshot($lobbyId);
+        return $this->buildRoundStateSnapshot($lobbyId, ['viewer_user_id' => $userId]);
     }
 
     public function prepareTvPreloads(int $lobbyId): void
@@ -983,7 +1031,7 @@ class LobbyService
 
     public function getScoreboard(int $userId, int $lobbyId): array
     {
-        $this->touchLobbyMember($lobbyId, $userId);
+        $this->touchLobbyMemberSeen($lobbyId, $userId);
         $this->cleanupStaleOwnerLobbies();
 
         $this->requireLobbyMember($lobbyId, $userId);
@@ -1050,14 +1098,16 @@ class LobbyService
     public function getLobbyById(int $lobbyId): array
     {
         $this->cleanupStaleOwnerLobbies();
+        $this->markInactiveLobbyPlayers($lobbyId);
 
         $lobby = $this->requireLobby($lobbyId);
 
         $playersStmt = $this->db->prepare(
-            'SELECT lp.user_id, lp.role, lp.is_ready, lp.score, lp.joined_at, u.username, u.avatar_url
+            'SELECT lp.user_id, lp.role, lp.is_ready, lp.score, lp.presence_status, lp.joined_at, lp.last_seen_at, u.username, u.avatar_url
              FROM mq_lobby_players lp
              JOIN users u ON u.id = lp.user_id
              WHERE lp.lobby_id = :id
+               AND lp.presence_status <> "removed"
              ORDER BY lp.joined_at ASC'
         );
         $playersStmt->execute(['id' => $lobbyId]);
@@ -1095,7 +1145,7 @@ class LobbyService
         }
 
         if ($isMember) {
-            $this->touchLobbyMember($lobbyId, $userId);
+            $this->touchLobbyMemberSeen($lobbyId, $userId);
         }
 
         return $this->getLobbyById($lobbyId);
@@ -1146,10 +1196,11 @@ class LobbyService
     public function listPublicLobbies(): array
     {
         $this->cleanupStaleOwnerLobbies();
+        $this->markInactiveLobbyPlayers();
 
         $stmt = $this->db->query(
             'SELECT l.id, l.lobby_code, l.name, l.status, l.max_players, l.owner_user_id, u.username AS owner_username, u.avatar_url AS owner_avatar_url,
-                    (SELECT COUNT(*) FROM mq_lobby_players lp WHERE lp.lobby_id = l.id) AS players_count
+                    (SELECT COUNT(*) FROM mq_lobby_players lp WHERE lp.lobby_id = l.id AND lp.presence_status <> "removed") AS players_count
              FROM mq_lobbies l
              JOIN users u ON u.id = l.owner_user_id
              WHERE l.visibility = "public"
@@ -1163,17 +1214,105 @@ class LobbyService
         return ['items' => $items];
     }
 
-    private function touchLobbyMember(int $lobbyId, int $userId): void
+    private function touchLobbyMemberSeen(int $lobbyId, int $userId): void
     {
         $stmt = $this->db->prepare(
             'UPDATE mq_lobby_players
              SET last_seen_at = NOW()
-             WHERE lobby_id = :lobby_id AND user_id = :user_id'
+             WHERE lobby_id = :lobby_id
+               AND user_id = :user_id
+               AND presence_status <> "removed"'
         );
         $stmt->execute([
             'lobby_id' => $lobbyId,
             'user_id' => $userId,
         ]);
+    }
+
+    private function touchLobbyMember(int $lobbyId, int $userId, string $presenceStatus = 'active'): bool
+    {
+        $presenceStatus = $this->normalizePresenceStatus($presenceStatus);
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET last_seen_at = NOW(),
+                 presence_status = :presence_status,
+                 is_ready = CASE WHEN :presence_status_ready = "active" THEN is_ready ELSE 0 END
+             WHERE lobby_id = :lobby_id
+               AND user_id = :user_id
+               AND presence_status <> "removed"
+               AND presence_status <> :presence_status_current'
+        );
+        $stmt->execute([
+            'presence_status' => $presenceStatus,
+            'presence_status_ready' => $presenceStatus,
+            'presence_status_current' => $presenceStatus,
+            'lobby_id' => $lobbyId,
+            'user_id' => $userId,
+        ]);
+        $changed = $stmt->rowCount() > 0;
+
+        if (!$changed) {
+            $stmt = $this->db->prepare(
+                'UPDATE mq_lobby_players
+                 SET last_seen_at = NOW()
+                 WHERE lobby_id = :lobby_id
+                   AND user_id = :user_id
+                   AND presence_status <> "removed"'
+            );
+            $stmt->execute([
+                'lobby_id' => $lobbyId,
+                'user_id' => $userId,
+            ]);
+        }
+
+        return $changed;
+    }
+
+    private function normalizePresenceStatus(string $status): string
+    {
+        $value = strtolower(trim($status));
+        return in_array($value, ['active', 'away', 'inactive'], true) ? $value : 'active';
+    }
+
+    private function syncLobbyPlayerRoles(int $lobbyId): void
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobby_players lp
+             JOIN mq_lobbies l ON l.id = lp.lobby_id
+             SET lp.role = CASE WHEN lp.user_id = l.owner_user_id THEN "owner" ELSE "player" END
+             WHERE lp.lobby_id = :lobby_id
+               AND lp.presence_status <> "removed"'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+    }
+
+    private function markInactiveLobbyPlayers(int $lobbyId = 0): int
+    {
+        $timeout = max(20, (int)MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS);
+        $where = [
+            'presence_status = "active"',
+            'last_seen_at < (NOW() - INTERVAL ' . $timeout . ' SECOND)',
+        ];
+        $params = [];
+        if ($lobbyId > 0) {
+            $where[] = 'lobby_id = :lobby_id';
+            $params['lobby_id'] = $lobbyId;
+        }
+
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET presence_status = "inactive",
+                 is_ready = 0
+             WHERE ' . implode(' AND ', $where)
+        );
+        $stmt->execute($params);
+        $changed = $stmt->rowCount();
+
+        if ($changed > 0 && $lobbyId > 0) {
+            $this->touchLobbyActivity($lobbyId);
+        }
+
+        return $changed;
     }
 
     private function touchLobbyActivity(int $lobbyId): void
@@ -1200,6 +1339,7 @@ class LobbyService
              JOIN mq_lobby_players lp
                ON lp.lobby_id = l.id
               AND lp.user_id = l.owner_user_id
+              AND lp.presence_status <> "removed"
              WHERE l.status IN ("waiting", "playing", "finished")
                AND lp.last_seen_at < (NOW() - INTERVAL ' . $timeout . ' SECOND)'
         );
@@ -1243,6 +1383,10 @@ class LobbyService
                               FROM mq_round_answers a
                               JOIN mq_rounds r2 ON r2.id = a.round_id
                               WHERE r2.lobby_id = l.id), 0) AS max_answer_id,
+                    COALESCE((SELECT MAX(aa.id)
+                              FROM mq_round_answer_attempts aa
+                              JOIN mq_rounds r_attempt ON r_attempt.id = aa.round_id
+                              WHERE r_attempt.lobby_id = l.id), 0) AS max_attempt_id,
                     COALESCE((SELECT MAX(UNIX_TIMESTAMP(v.voted_at))
                               FROM mq_round_reveal_votes v
                               JOIN mq_rounds r3 ON r3.id = v.round_id
@@ -1269,6 +1413,7 @@ class LobbyService
             (int)$row['pool_updated'],
             (int)$row['max_round_id'],
             (int)$row['max_answer_id'],
+            (int)$row['max_attempt_id'],
             (int)$row['max_reveal_vote'],
             (int)$row['reveal_vote_count'],
         ]);
@@ -1344,6 +1489,20 @@ class LobbyService
     }
 
     private function isLobbyMember(int $lobbyId, int $userId): bool
+    {
+        $stmt = $this->db->prepare(
+            'SELECT 1
+             FROM mq_lobby_players
+             WHERE lobby_id = :lobby_id
+               AND user_id = :user_id
+               AND presence_status <> "removed"
+             LIMIT 1'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId, 'user_id' => $userId]);
+        return (bool)$stmt->fetch();
+    }
+
+    private function isKnownLobbyPlayer(int $lobbyId, int $userId): bool
     {
         $stmt = $this->db->prepare(
             'SELECT 1 FROM mq_lobby_players WHERE lobby_id = :lobby_id AND user_id = :user_id LIMIT 1'
@@ -1775,7 +1934,23 @@ class LobbyService
         $stmt = $this->db->prepare(
             'SELECT COUNT(*) AS c
              FROM mq_lobby_players
-             WHERE lobby_id = :lobby_id'
+             WHERE lobby_id = :lobby_id
+               AND presence_status <> "removed"'
+        );
+        $stmt->execute(['lobby_id' => $lobbyId]);
+
+        return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function countEligibleLobbyPlayers(int $lobbyId): int
+    {
+        $this->markInactiveLobbyPlayers($lobbyId);
+
+        $stmt = $this->db->prepare(
+            'SELECT COUNT(*) AS c
+             FROM mq_lobby_players
+             WHERE lobby_id = :lobby_id
+               AND presence_status = "active"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
 
@@ -1788,15 +1963,32 @@ class LobbyService
             'SELECT COUNT(*) AS c
              FROM mq_lobby_players
              WHERE lobby_id = :lobby_id
-               AND is_ready = 1'
+               AND is_ready = 1
+               AND presence_status = "active"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
 
         return (int)($stmt->fetch()['c'] ?? 0);
     }
 
-    private function countSolvedPlayersForRound(int $roundId): int
+    private function countSolvedPlayersForRound(int $roundId, int $lobbyId = 0): int
     {
+        if ($lobbyId > 0) {
+            $stmt = $this->db->prepare(
+                'SELECT COUNT(*) AS c
+                 FROM mq_round_answers a
+                 JOIN mq_lobby_players lp
+                   ON lp.lobby_id = :lobby_id
+                  AND lp.user_id = a.user_id
+                  AND lp.presence_status = "active"
+                 WHERE a.round_id = :round_id
+                   AND a.score_awarded > 0'
+            );
+            $stmt->execute(['round_id' => $roundId, 'lobby_id' => $lobbyId]);
+
+            return (int)($stmt->fetch()['c'] ?? 0);
+        }
+
         $stmt = $this->db->prepare(
             'SELECT COUNT(*) AS c
              FROM mq_round_answers
@@ -1808,8 +2000,23 @@ class LobbyService
         return (int)($stmt->fetch()['c'] ?? 0);
     }
 
-    private function countEarlyRevealVotes(int $roundId): int
+    private function countEarlyRevealVotes(int $roundId, int $lobbyId = 0): int
     {
+        if ($lobbyId > 0) {
+            $stmt = $this->db->prepare(
+                'SELECT COUNT(*) AS c
+                 FROM mq_round_reveal_votes v
+                 JOIN mq_lobby_players lp
+                   ON lp.lobby_id = :lobby_id
+                  AND lp.user_id = v.user_id
+                  AND lp.presence_status = "active"
+                 WHERE v.round_id = :round_id'
+            );
+            $stmt->execute(['round_id' => $roundId, 'lobby_id' => $lobbyId]);
+
+            return (int)($stmt->fetch()['c'] ?? 0);
+        }
+
         $stmt = $this->db->prepare(
             'SELECT COUNT(*) AS c
              FROM mq_round_reveal_votes
@@ -1825,7 +2032,8 @@ class LobbyService
         $stmt = $this->db->prepare(
             'UPDATE mq_lobby_players
              SET is_ready = 0
-             WHERE lobby_id = :lobby_id'
+             WHERE lobby_id = :lobby_id
+               AND presence_status = "active"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
     }
@@ -2447,6 +2655,7 @@ class LobbyService
     private function buildRoundStateSnapshot(int $lobbyId, array $options = []): array
     {
         $lobby = $this->requireLobby($lobbyId);
+        $viewerUserId = (int)($options['viewer_user_id'] ?? 0);
         $totalRounds = $this->validateTotalRoundsValue($lobby['total_rounds'] ?? MQ_DEFAULT_TOTAL_ROUNDS);
         $preloadLimit = max(1, min(MQ_TV_PRELOAD_LOOKAHEAD, (int)($options['preload_limit'] ?? 1)));
         $includeWaitingPreloads = !empty($options['include_waiting_preloads']);
@@ -2483,12 +2692,15 @@ class LobbyService
         );
         $answersStmt->execute(['round_id' => $round['id']]);
         $answers = $answersStmt->fetchAll();
+        $solvedPlayers = $this->buildSolvedPlayerSnapshot($answers);
+        $viewerSolved = $viewerUserId > 0 && $this->hasUserSolvedRoundAnswers($answers, $viewerUserId);
 
         $answerDeadline = $this->getAnswerDeadlineTimestamp($lobby, $round);
         $nextVoteAt = $this->getNextVoteAvailableTimestamp($lobby, $round);
         $isAcceptingAnswers = $this->isRoundAnswerWindowOpen($lobby, $round);
         $isWaitingToStart = $this->isRoundWaitingToStart($round);
         $isRevealVisible = (!$isWaitingToStart && !$isAcceptingAnswers) || strtolower((string)($round['status'] ?? '')) === 'reveal';
+        $includeSolution = $isRevealVisible || $viewerSolved;
         $showTrackCategory = !empty($lobby['show_track_category']);
         $this->cleanupExpiredSuggestionHolds();
 
@@ -2515,12 +2727,19 @@ class LobbyService
                 'is_waiting_to_start' => $isWaitingToStart,
                 'starts_in_seconds' => max(0.0, $this->resolveRoundTimestamp($round, 'started_at') - microtime(true)),
                 'is_reveal_visible' => $isRevealVisible,
-                'track' => $this->redactTrackSnapshot($track ?: null, $isRevealVisible, $showTrackCategory),
+                'track' => $this->redactTrackSnapshot($track ?: null, $includeSolution, $showTrackCategory),
             ],
             'next_round_number' => $nextTrack['round_number'] ?? null,
             'next_track' => $nextTrack,
             'upcoming_tracks' => $upcomingTracks,
-            'answers' => $answers,
+            'answers' => $this->filterRoundAnswersForViewer($answers, $isRevealVisible, $viewerUserId, $viewerSolved),
+            'answer_attempts' => $this->filterRoundAttemptsForViewer(
+                $this->buildRoundAnswerAttemptSnapshot((int)$round['id']),
+                $isRevealVisible,
+                $viewerUserId,
+                $viewerSolved
+            ),
+            'solved_players' => $solvedPlayers,
             'early_reveal_votes' => $this->buildEarlyRevealVoteSnapshot((int)$round['id']),
             'suggestion_holds' => $this->buildSuggestionHoldSnapshot((int)$round['id']),
         ];
@@ -2624,11 +2843,14 @@ class LobbyService
 
     private function buildScoreboardSnapshot(int $lobbyId): array
     {
+        $this->markInactiveLobbyPlayers($lobbyId);
+
         $stmt = $this->db->prepare(
-            'SELECT lp.user_id, u.username, u.avatar_url, lp.role, lp.score
+            'SELECT lp.user_id, u.username, u.avatar_url, lp.role, lp.score, lp.presence_status
              FROM mq_lobby_players lp
              JOIN users u ON u.id = lp.user_id
              WHERE lp.lobby_id = :lobby_id
+               AND lp.presence_status <> "removed"
              ORDER BY lp.score DESC, lp.joined_at ASC'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
@@ -2642,12 +2864,94 @@ class LobbyService
             'SELECT v.user_id, u.username, u.avatar_url, v.voted_at
              FROM mq_round_reveal_votes v
              JOIN users u ON u.id = v.user_id
+             JOIN mq_rounds r ON r.id = v.round_id
+             JOIN mq_lobby_players lp
+               ON lp.lobby_id = r.lobby_id
+              AND lp.user_id = v.user_id
+              AND lp.presence_status = "active"
              WHERE v.round_id = :round_id
              ORDER BY v.voted_at ASC'
         );
         $stmt->execute(['round_id' => $roundId]);
 
         return $this->hydrateAvatarRows($stmt->fetchAll(), 'avatar_url', 'user_id');
+    }
+
+    private function buildSolvedPlayerSnapshot(array $answers): array
+    {
+        $items = [];
+        foreach ($answers as $answer) {
+            if ((int)($answer['score_awarded'] ?? 0) <= 0) {
+                continue;
+            }
+
+            $items[] = [
+                'user_id' => (int)($answer['user_id'] ?? 0),
+                'username' => (string)($answer['username'] ?? ''),
+                'score_awarded' => (int)($answer['score_awarded'] ?? 0),
+                'answered_at' => $answer['answered_at'] ?? null,
+            ];
+        }
+
+        return $items;
+    }
+
+    private function hasUserSolvedRoundAnswers(array $answers, int $userId): bool
+    {
+        foreach ($answers as $answer) {
+            if ((int)($answer['user_id'] ?? 0) === $userId && (int)($answer['score_awarded'] ?? 0) > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function filterRoundAnswersForViewer(array $answers, bool $isRevealVisible, int $viewerUserId, bool $viewerSolved): array
+    {
+        if ($isRevealVisible) {
+            return $answers;
+        }
+
+        return array_values(array_filter($answers, static function (array $answer) use ($viewerUserId, $viewerSolved): bool {
+            $userId = (int)($answer['user_id'] ?? 0);
+            if ($viewerUserId > 0 && $userId === $viewerUserId) {
+                return true;
+            }
+
+            return $viewerSolved && (int)($answer['score_awarded'] ?? 0) > 0;
+        }));
+    }
+
+    private function buildRoundAnswerAttemptSnapshot(int $roundId): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT a.id, a.user_id, u.username, a.guess_title, a.guess_artist, a.is_correct, a.score_awarded, a.created_at
+             FROM mq_round_answer_attempts a
+             JOIN users u ON u.id = a.user_id
+             WHERE a.round_id = :round_id
+             ORDER BY a.created_at ASC, a.id ASC
+             LIMIT 200'
+        );
+        $stmt->execute(['round_id' => $roundId]);
+
+        return $stmt->fetchAll();
+    }
+
+    private function filterRoundAttemptsForViewer(array $attempts, bool $isRevealVisible, int $viewerUserId, bool $viewerSolved): array
+    {
+        if ($isRevealVisible) {
+            return $attempts;
+        }
+
+        return array_values(array_filter($attempts, static function (array $attempt) use ($viewerUserId, $viewerSolved): bool {
+            $userId = (int)($attempt['user_id'] ?? 0);
+            if ($viewerUserId > 0 && $userId === $viewerUserId) {
+                return true;
+            }
+
+            return $viewerSolved && (int)($attempt['is_correct'] ?? 0) === 1;
+        }));
     }
 
     private function buildSuggestionHoldSnapshot(int $roundId): array
@@ -2676,6 +2980,29 @@ class LobbyService
         $stmt->execute(['round_id' => $roundId]);
 
         return (int)($stmt->fetch()['c'] ?? 0);
+    }
+
+    private function recordRoundAnswerAttempt(
+        int $roundId,
+        int $userId,
+        string $guessTitle,
+        string $guessArtist,
+        bool $isCorrect,
+        int $scoreAwarded
+    ): void {
+        $stmt = $this->db->prepare(
+            'INSERT INTO mq_round_answer_attempts
+             (round_id, user_id, guess_title, guess_artist, is_correct, score_awarded, created_at)
+             VALUES (:round_id, :user_id, :guess_title, :guess_artist, :is_correct, :score_awarded, NOW(3))'
+        );
+        $stmt->execute([
+            'round_id' => $roundId,
+            'user_id' => $userId,
+            'guess_title' => trim($guessTitle) !== '' ? trim($guessTitle) : null,
+            'guess_artist' => trim($guessArtist) !== '' ? trim($guessArtist) : null,
+            'is_correct' => $isCorrect ? 1 : 0,
+            'score_awarded' => $scoreAwarded,
+        ]);
     }
 
     private function cleanupExpiredSuggestionHolds(): void

@@ -68,6 +68,7 @@ Migration:
 - `sql/009_melodyquest_player_suggestions.sql`
 - `sql/010_melodyquest_tv_pairings.sql`
 - `sql/011_melodyquest_round_preloads.sql`
+- `sql/012_melodyquest_presence_and_attempts.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -77,6 +78,7 @@ La migration `008` ajoute `mq_lobbies.answer_similarity_threshold`, seuil de cor
 La migration `009` ajoute `mq_player_suggestions` pour les corrections/alias/nouvelles musiques proposes par les joueurs et `mq_round_suggestion_holds` pour bloquer temporairement le passage a la manche suivante pendant qu'un joueur remplit une proposition.
 La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre une television/ecran dedie et un salon MelodyQuest. Le code TV expire rapidement tant qu'il est en attente, puis la liaison est prolongee pendant que la TV synchronise le salon.
 La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir les musiques a venir sans recalculer le tirage au dernier moment. Le frontend TV utilise actuellement un lecteur YouTube actif simple et ne pilote plus de lecteur d'avance.
+La migration `012` ajoute la presence joueur (`presence_status`, `removed_at`, `removed_by`) et `mq_round_answer_attempts` pour conserver les essais de reponse sans remplacer le score courant.
 
 ## Import catalogue CSV
 
@@ -141,11 +143,12 @@ Authentifie:
 - `GET action=listTracks&family_id=...` (optionnel)
 
 `updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
-`voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs presents.
-`voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs presents. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
+`touchLobby` accepte `presence_status` (`active`, `away`, `inactive`). `away` garde le joueur dans le salon mais le retire des votes/attentes; `inactive` est aussi applique automatiquement apres silence de presence.
+`voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.
+`voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
 `holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu.
 `submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video. Anti-abus: 5 suggestions maximum par 10 minutes et par utilisateur authentifie ou IP anonyme.
-`getRoundState` renvoie `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `upcoming_tracks`, `early_reveal_votes` et `suggestion_holds` pour l'interface de jeu. Avant revelation, `round.track` ne contient que les donnees necessaires a la lecture (`youtube_video_id`, `start_offset_seconds`) et, si l'option du salon l'autorise, la categorie. Les champs solution (`title`, `artist`, `family_name`, alias, etc.) ne sont renvoyes qu'une fois la reponse revelee. `next_track` et `upcoming_tracks` restent toujours expurges des champs solution.
+`getRoundState` renvoie `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `upcoming_tracks`, `early_reveal_votes`, `suggestion_holds`, `solved_players` et `answer_attempts` pour l'interface de jeu. Avant revelation globale, `round.track` ne contient que les donnees necessaires a la lecture (`youtube_video_id`, `start_offset_seconds`) et, si l'option du salon l'autorise, la categorie. Les champs solution (`title`, `artist`, `family_name`, alias, etc.) sont renvoyes au joueur qui a trouve et a tout le monde apres revelation. `next_track` et `upcoming_tracks` restent toujours expurges des champs solution.
 `submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
 `linkTvPairing` lie un code TV en attente au salon de l'utilisateur connecte; l'utilisateur doit deja etre membre du salon.
 
@@ -197,7 +200,7 @@ Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin glob
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`
 
-`validateTrack` accepte au minimum `track_id` ou `id`. Il peut aussi recevoir les champs de correction `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id` ou `youtube_url`; dans ce cas l'API applique ces corrections puis valide la musique dans une meme transaction. Quand `aliases` est fourni, la liste remplace les alias acceptes de l'oeuvre cible via `mq_family_aliases`.
+`validateTrack` accepte au minimum `track_id` ou `id`. Il peut aussi recevoir les champs de correction `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url` ou `start_offset_seconds`; dans ce cas l'API applique ces corrections puis valide la musique dans une meme transaction. Quand `aliases` est fourni, la liste remplace les alias acceptes de l'oeuvre cible via `mq_family_aliases`.
 
 ## Configuration
 
@@ -211,6 +214,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
   - `MERCURE_PUBLISHER_JWT_KEY`
   - `MERCURE_SUBSCRIBER_JWT_KEY`
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
+- `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS` permet de marquer un joueur actif comme inactif apres silence de presence; valeur par defaut: `45`, minimum `20`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
 - `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`.
