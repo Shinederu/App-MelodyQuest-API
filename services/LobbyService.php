@@ -1098,7 +1098,6 @@ class LobbyService
     public function getLobbyById(int $lobbyId): array
     {
         $this->cleanupStaleOwnerLobbies();
-        $this->markInactiveLobbyPlayers($lobbyId);
 
         $lobby = $this->requireLobby($lobbyId);
 
@@ -1196,7 +1195,6 @@ class LobbyService
     public function listPublicLobbies(): array
     {
         $this->cleanupStaleOwnerLobbies();
-        $this->markInactiveLobbyPlayers();
 
         $stmt = $this->db->query(
             'SELECT l.id, l.lobby_code, l.name, l.status, l.max_players, l.owner_user_id, u.username AS owner_username, u.avatar_url AS owner_avatar_url,
@@ -1271,7 +1269,7 @@ class LobbyService
     private function normalizePresenceStatus(string $status): string
     {
         $value = strtolower(trim($status));
-        return in_array($value, ['active', 'away', 'inactive'], true) ? $value : 'active';
+        return in_array($value, ['active', 'away'], true) ? $value : 'active';
     }
 
     private function syncLobbyPlayerRoles(int $lobbyId): void
@@ -1284,35 +1282,6 @@ class LobbyService
                AND lp.presence_status <> "removed"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
-    }
-
-    private function markInactiveLobbyPlayers(int $lobbyId = 0): int
-    {
-        $timeout = max(20, (int)MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS);
-        $where = [
-            'presence_status = "active"',
-            'last_seen_at < (NOW() - INTERVAL ' . $timeout . ' SECOND)',
-        ];
-        $params = [];
-        if ($lobbyId > 0) {
-            $where[] = 'lobby_id = :lobby_id';
-            $params['lobby_id'] = $lobbyId;
-        }
-
-        $stmt = $this->db->prepare(
-            'UPDATE mq_lobby_players
-             SET presence_status = "inactive",
-                 is_ready = 0
-             WHERE ' . implode(' AND ', $where)
-        );
-        $stmt->execute($params);
-        $changed = $stmt->rowCount();
-
-        if ($changed > 0 && $lobbyId > 0) {
-            $this->touchLobbyActivity($lobbyId);
-        }
-
-        return $changed;
     }
 
     private function touchLobbyActivity(int $lobbyId): void
@@ -1944,13 +1913,12 @@ class LobbyService
 
     private function countEligibleLobbyPlayers(int $lobbyId): int
     {
-        $this->markInactiveLobbyPlayers($lobbyId);
-
         $stmt = $this->db->prepare(
             'SELECT COUNT(*) AS c
              FROM mq_lobby_players
              WHERE lobby_id = :lobby_id
-               AND presence_status = "active"'
+               AND presence_status <> "removed"
+               AND presence_status <> "away"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
 
@@ -1964,7 +1932,8 @@ class LobbyService
              FROM mq_lobby_players
              WHERE lobby_id = :lobby_id
                AND is_ready = 1
-               AND presence_status = "active"'
+               AND presence_status <> "removed"
+               AND presence_status <> "away"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
 
@@ -1980,7 +1949,8 @@ class LobbyService
                  JOIN mq_lobby_players lp
                    ON lp.lobby_id = :lobby_id
                   AND lp.user_id = a.user_id
-                  AND lp.presence_status = "active"
+                  AND lp.presence_status <> "removed"
+                  AND lp.presence_status <> "away"
                  WHERE a.round_id = :round_id
                    AND a.score_awarded > 0'
             );
@@ -2009,7 +1979,8 @@ class LobbyService
                  JOIN mq_lobby_players lp
                    ON lp.lobby_id = :lobby_id
                   AND lp.user_id = v.user_id
-                  AND lp.presence_status = "active"
+                  AND lp.presence_status <> "removed"
+                  AND lp.presence_status <> "away"
                  WHERE v.round_id = :round_id'
             );
             $stmt->execute(['round_id' => $roundId, 'lobby_id' => $lobbyId]);
@@ -2033,7 +2004,7 @@ class LobbyService
             'UPDATE mq_lobby_players
              SET is_ready = 0
              WHERE lobby_id = :lobby_id
-               AND presence_status = "active"'
+               AND presence_status <> "removed"'
         );
         $stmt->execute(['lobby_id' => $lobbyId]);
     }
@@ -2843,8 +2814,6 @@ class LobbyService
 
     private function buildScoreboardSnapshot(int $lobbyId): array
     {
-        $this->markInactiveLobbyPlayers($lobbyId);
-
         $stmt = $this->db->prepare(
             'SELECT lp.user_id, u.username, u.avatar_url, lp.role, lp.score, lp.presence_status
              FROM mq_lobby_players lp
@@ -2868,7 +2837,8 @@ class LobbyService
              JOIN mq_lobby_players lp
                ON lp.lobby_id = r.lobby_id
               AND lp.user_id = v.user_id
-              AND lp.presence_status = "active"
+              AND lp.presence_status <> "removed"
+              AND lp.presence_status <> "away"
              WHERE v.round_id = :round_id
              ORDER BY v.voted_at ASC'
         );

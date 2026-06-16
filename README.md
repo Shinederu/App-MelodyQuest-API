@@ -143,7 +143,7 @@ Authentifie:
 - `GET action=listTracks&family_id=...` (optionnel)
 
 `updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
-`touchLobby` accepte `presence_status` (`active`, `away`, `inactive`). `away` garde le joueur dans le salon mais le retire des votes/attentes; `inactive` est aussi applique automatiquement apres silence de presence.
+`touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.
 `voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
 `holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu.
@@ -214,7 +214,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
   - `MERCURE_PUBLISHER_JWT_KEY`
   - `MERCURE_SUBSCRIBER_JWT_KEY`
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
-- `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS` permet de marquer un joueur actif comme inactif apres silence de presence; valeur par defaut: `45`, minimum `20`.
+- `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS` est une ancienne variable conservee pour compatibilite runtime, mais la detection automatique d'inactivite joueur est desactivee. La presence de partie est geree manuellement via `active`/`away`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
 - `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`.
