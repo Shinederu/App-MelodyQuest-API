@@ -207,18 +207,34 @@ class LobbyService
         ];
     }
 
-    public function touchLobbyPresence(int $userId, int $lobbyId, string $presenceStatus = 'active'): array
+    public function touchLobbyPresence(int $userId, int $lobbyId, string $presenceStatus = 'active', ?int $targetUserId = null): array
     {
         $this->requireLobbyMember($lobbyId, $userId);
         $status = $this->normalizePresenceStatus($presenceStatus);
-        $changed = $this->touchLobbyMember($lobbyId, $userId, $status);
+        $targetUserId = $targetUserId !== null && $targetUserId > 0 ? $targetUserId : $userId;
+
+        if ($targetUserId !== $userId) {
+            $lobby = $this->requireLobby($lobbyId);
+            $this->requireOwner($lobby, $userId);
+            $this->requireLobbyMember($lobbyId, $targetUserId);
+            $this->touchLobbyMember($lobbyId, $userId);
+            $changed = $this->setLobbyMemberPresence($lobbyId, $targetUserId, $status);
+        } else {
+            $changed = $this->touchLobbyMember($lobbyId, $userId, $status);
+        }
+
         $this->cleanupStaleOwnerLobbies();
 
         if ($changed) {
             $this->touchLobbyActivity($lobbyId);
         }
 
-        return ['ok' => true, 'presence_status' => $status];
+        return [
+            'ok' => true,
+            'presence_status' => $status,
+            'target_user_id' => $targetUserId,
+            'changed' => $changed,
+        ];
     }
 
     public function kickPlayer(int $ownerUserId, int $lobbyId, int $targetUserId): array
@@ -1264,6 +1280,29 @@ class LobbyService
         }
 
         return $changed;
+    }
+
+    private function setLobbyMemberPresence(int $lobbyId, int $userId, string $presenceStatus): bool
+    {
+        $presenceStatus = $this->normalizePresenceStatus($presenceStatus);
+        $stmt = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET presence_status = :presence_status,
+                 is_ready = CASE WHEN :presence_status_ready = "active" THEN is_ready ELSE 0 END
+             WHERE lobby_id = :lobby_id
+               AND user_id = :user_id
+               AND presence_status <> "removed"
+               AND presence_status <> :presence_status_current'
+        );
+        $stmt->execute([
+            'presence_status' => $presenceStatus,
+            'presence_status_ready' => $presenceStatus,
+            'presence_status_current' => $presenceStatus,
+            'lobby_id' => $lobbyId,
+            'user_id' => $userId,
+        ]);
+
+        return $stmt->rowCount() > 0;
     }
 
     private function normalizePresenceStatus(string $status): string

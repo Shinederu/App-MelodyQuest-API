@@ -145,7 +145,7 @@ Authentifie:
 - `GET action=listTracks&family_id=...` (optionnel)
 
 `updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
-`touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
+`touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. Le createur peut aussi fournir `target_user_id` pour passer un autre joueur present/absent sans le retirer du salon. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.
 `voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
 `holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu.

@@ -56,8 +56,12 @@ class LobbyController
         }
 
         $presenceStatus = (string)($payload['presence_status'] ?? 'active');
-        $data = $this->service->touchLobbyPresence($userId, $lobbyId, $presenceStatus);
+        $targetUserId = isset($payload['target_user_id']) ? (int)$payload['target_user_id'] : null;
+        $data = $this->service->touchLobbyPresence($userId, $lobbyId, $presenceStatus, $targetUserId);
         $this->refreshLobbyRealtimeAuthorization($lobbyId);
+        if (!empty($data['changed'])) {
+            $this->publishLobbySnapshot($lobbyId, true);
+        }
         json_success('Presence mise a jour', $data);
     }
 
