@@ -69,6 +69,7 @@ Migration:
 - `sql/010_melodyquest_tv_pairings.sql`
 - `sql/011_melodyquest_round_preloads.sql`
 - `sql/012_melodyquest_presence_and_attempts.sql`
+- `sql/013_melodyquest_answer_similarity_default_80.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -79,6 +80,7 @@ La migration `009` ajoute `mq_player_suggestions` pour les corrections/alias/nou
 La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre une television/ecran dedie et un salon MelodyQuest. Le code TV expire rapidement tant qu'il est en attente, puis la liaison est prolongee pendant que la TV synchronise le salon.
 La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir les musiques a venir sans recalculer le tirage au dernier moment. Le frontend TV utilise actuellement un lecteur YouTube actif simple et ne pilote plus de lecteur d'avance.
 La migration `012` ajoute la presence joueur (`presence_status`, `removed_at`, `removed_by`) et `mq_round_answer_attempts` pour conserver les essais de reponse sans remplacer le score courant.
+La migration `013` passe la valeur SQL par defaut de `mq_lobbies.answer_similarity_threshold` a `80` pour les nouveaux salons. Les salons existants gardent leur valeur.
 
 ## Import catalogue CSV
 
@@ -216,7 +218,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
 - `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS` est une ancienne variable conservee pour compatibilite runtime, mais la detection automatique d'inactivite joueur est desactivee. La presence de partie est geree manuellement via `active`/`away`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
-- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `100`.
+- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `80`.
 - `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`.
 - `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir l'API peut garder dans la file de prochaines manches; valeur par defaut: `3`, bornee entre `1` et `5`. Le nom est historique: le frontend TV actuel ne pilote pas de lecteur d'avance.
 - `MQ_MERCURE_TOPIC_BASE` (optionnel)

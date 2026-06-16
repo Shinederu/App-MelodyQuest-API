@@ -32,7 +32,7 @@ Configurer (PHP runtime):
 - `MERCURE_PUBLISHER_JWT_KEY`
 - `MERCURE_SUBSCRIBER_JWT_KEY`
 - `MQ_ROUND_PRELOAD_SECONDS` optionnel, par defaut `3`
-- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` optionnel, par defaut `100`
+- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` optionnel, par defaut `80`
 - `MQ_TV_PRELOAD_LOOKAHEAD` optionnel, par defaut `3`
 
 ## Smoke tests API (authentifie)
