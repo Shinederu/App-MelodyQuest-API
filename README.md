@@ -70,6 +70,7 @@ Migration:
 - `sql/011_melodyquest_round_preloads.sql`
 - `sql/012_melodyquest_presence_and_attempts.sql`
 - `sql/013_melodyquest_answer_similarity_default_80.sql`
+- `sql/014_melodyquest_away_bonus.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -81,6 +82,7 @@ La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre un
 La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir les musiques a venir sans recalculer le tirage au dernier moment. Le frontend TV utilise actuellement un lecteur YouTube actif simple et ne pilote plus de lecteur d'avance.
 La migration `012` ajoute la presence joueur (`presence_status`, `removed_at`, `removed_by`) et `mq_round_answer_attempts` pour conserver les essais de reponse sans remplacer le score courant.
 La migration `013` passe la valeur SQL par defaut de `mq_lobbies.answer_similarity_threshold` a `80` pour les nouveaux salons. Les salons existants gardent leur valeur.
+La migration `014` ajoute `mq_round_away_bonuses`, trace idempotente des points de compensation attribues aux joueurs absents quand le premier joueur trouve une manche.
 
 ## Import catalogue CSV
 
@@ -150,7 +152,7 @@ Authentifie:
 `voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
 `holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu.
 `submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video. Anti-abus: 5 suggestions maximum par 10 minutes et par utilisateur authentifie ou IP anonyme.
-`getRoundState` renvoie `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `upcoming_tracks`, `early_reveal_votes`, `suggestion_holds`, `solved_players` et `answer_attempts` pour l'interface de jeu. Avant revelation globale, `round.track` ne contient que les donnees necessaires a la lecture (`youtube_video_id`, `start_offset_seconds`) et, si l'option du salon l'autorise, la categorie. Les champs solution (`title`, `artist`, `family_name`, alias, etc.) sont renvoyes au joueur qui a trouve et a tout le monde apres revelation. `next_track` et `upcoming_tracks` restent toujours expurges des champs solution.
+`getRoundState` renvoie `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `upcoming_tracks`, `early_reveal_votes`, `suggestion_holds`, `solved_players` et `answer_attempts` pour l'interface de jeu. Avant revelation globale, `round.track` ne contient que les donnees necessaires a la lecture (`youtube_video_id`, `start_offset_seconds`) et, si l'option du salon l'autorise, la categorie. Les champs solution (`title`, `artist`, `family_name`, alias, etc.) sont renvoyes au joueur qui a trouve et a tout le monde apres revelation. `next_track` et `upcoming_tracks` restent toujours expurges des champs solution. Les joueurs ne recoivent pas l'historique complet des tentatives: `answer_attempts` expose seulement les derniers essais rates visibles. L'historique complet reste en base dans `mq_round_answer_attempts` pour de futures statistiques/admin.
 `submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
 `linkTvPairing` lie un code TV en attente au salon de l'utilisateur connecte; l'utilisateur doit deja etre membre du salon.
 
@@ -219,6 +221,7 @@ Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
 - `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS` est une ancienne variable conservee pour compatibilite runtime, mais la detection automatique d'inactivite joueur est desactivee. La presence de partie est geree manuellement via `active`/`away`.
 - `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `80`.
+- `MQ_AWAY_BONUS_PERCENT` definit le pourcentage du score du premier joueur qui trouve attribue aux joueurs absents; valeur par defaut: `10`.
 - `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`.
 - `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir l'API peut garder dans la file de prochaines manches; valeur par defaut: `3`, bornee entre `1` et `5`. Le nom est historique: le frontend TV actuel ne pilote pas de lecteur d'avance.
 - `MQ_MERCURE_TOPIC_BASE` (optionnel)

@@ -855,6 +855,7 @@ class LobbyService
         $scoreAwarded = $isCorrect ? $this->calculateTimedScore($lobby, $round) : 0;
         $delta = $scoreAwarded - $previousScore;
         $autoRevealed = false;
+        $awayBonus = ['score_awarded' => 0, 'players_count' => 0];
 
         $this->db->beginTransaction();
         try {
@@ -871,6 +872,10 @@ class LobbyService
             if (!$this->isRoundAnswerWindowOpen($lockedLobby, $lockedRound)) {
                 throw new RuntimeException('Le temps de réponse est écoulé');
             }
+
+            $hasSolvedPlayersBefore = $scoreAwarded > 0
+                ? $this->hasSolvedPlayersForRoundForUpdate((int)$lockedRound['id'])
+                : false;
 
             $upsert = $this->db->prepare(
                 'INSERT INTO mq_round_answers
@@ -916,6 +921,15 @@ class LobbyService
                 ]);
             }
 
+            if ($scoreAwarded > 0 && !$hasSolvedPlayersBefore) {
+                $awayBonus = $this->awardAwayBonusToAbsentPlayers(
+                    $lobbyId,
+                    (int)$lockedRound['id'],
+                    $userId,
+                    $scoreAwarded
+                );
+            }
+
             if ($scoreAwarded > 0) {
                 $playersCount = $this->countEligibleLobbyPlayers($lobbyId);
                 $solvedPlayersCount = $this->countSolvedPlayersForRound((int)$lockedRound['id'], $lobbyId);
@@ -939,6 +953,7 @@ class LobbyService
             'is_correct_artist' => (bool)$isCorrectArtist,
             'auto_revealed' => $autoRevealed,
             'answer_similarity_threshold' => $answerSimilarityThreshold,
+            'away_bonus' => $awayBonus,
             'track' => $isCorrect ? $this->getTrackSnapshotById((int)$round['track_id']) : null,
         ];
     }
@@ -2009,6 +2024,82 @@ class LobbyService
         return (int)($stmt->fetch()['c'] ?? 0);
     }
 
+    private function hasSolvedPlayersForRoundForUpdate(int $roundId): bool
+    {
+        $stmt = $this->db->prepare(
+            'SELECT id
+             FROM mq_round_answers
+             WHERE round_id = :round_id
+               AND score_awarded > 0
+             ORDER BY answered_at ASC, id ASC
+             LIMIT 1
+             FOR UPDATE'
+        );
+        $stmt->execute(['round_id' => $roundId]);
+
+        return (bool)$stmt->fetch();
+    }
+
+    private function awardAwayBonusToAbsentPlayers(int $lobbyId, int $roundId, int $sourceUserId, int $sourceScore): array
+    {
+        if ($sourceScore <= 0 || MQ_AWAY_BONUS_PERCENT <= 0) {
+            return ['score_awarded' => 0, 'players_count' => 0];
+        }
+
+        $bonus = max(1, (int)round($sourceScore * MQ_AWAY_BONUS_PERCENT / 100));
+        $playersStmt = $this->db->prepare(
+            'SELECT user_id
+             FROM mq_lobby_players
+             WHERE lobby_id = :lobby_id
+               AND presence_status = "away"
+               AND user_id <> :source_user_id
+             FOR UPDATE'
+        );
+        $playersStmt->execute([
+            'lobby_id' => $lobbyId,
+            'source_user_id' => $sourceUserId,
+        ]);
+        $awayUserIds = array_map('intval', array_column($playersStmt->fetchAll(), 'user_id'));
+        if (!$awayUserIds) {
+            return ['score_awarded' => $bonus, 'players_count' => 0];
+        }
+
+        $insert = $this->db->prepare(
+            'INSERT IGNORE INTO mq_round_away_bonuses
+             (round_id, user_id, source_user_id, score_awarded, awarded_at)
+             VALUES (:round_id, :user_id, :source_user_id, :score_awarded, NOW(3))'
+        );
+        $scoreUpdate = $this->db->prepare(
+            'UPDATE mq_lobby_players
+             SET score = score + :score_awarded
+             WHERE lobby_id = :lobby_id
+               AND user_id = :user_id
+               AND presence_status <> "removed"'
+        );
+
+        $awardedCount = 0;
+        foreach ($awayUserIds as $awayUserId) {
+            $insert->execute([
+                'round_id' => $roundId,
+                'user_id' => $awayUserId,
+                'source_user_id' => $sourceUserId,
+                'score_awarded' => $bonus,
+            ]);
+            if ($insert->rowCount() <= 0) {
+                continue;
+            }
+
+            $scoreUpdate->execute([
+                'score_awarded' => $bonus,
+                'lobby_id' => $lobbyId,
+                'user_id' => $awayUserId,
+            ]);
+            $awardedCount++;
+        }
+
+        return ['score_awarded' => $bonus, 'players_count' => $awardedCount];
+    }
+
     private function countEarlyRevealVotes(int $roundId, int $lobbyId = 0): int
     {
         if ($lobbyId > 0) {
@@ -2949,18 +3040,20 @@ class LobbyService
 
     private function filterRoundAttemptsForViewer(array $attempts, bool $isRevealVisible, int $viewerUserId, bool $viewerSolved): array
     {
-        if ($isRevealVisible) {
-            return $attempts;
-        }
-
-        return array_values(array_filter($attempts, static function (array $attempt) use ($viewerUserId, $viewerSolved): bool {
-            $userId = (int)($attempt['user_id'] ?? 0);
-            if ($viewerUserId > 0 && $userId === $viewerUserId) {
-                return true;
+        $visible = array_values(array_filter($attempts, static function (array $attempt) use ($isRevealVisible, $viewerUserId): bool {
+            if ((int)($attempt['is_correct'] ?? 0) === 1 || (int)($attempt['score_awarded'] ?? 0) > 0) {
+                return false;
             }
 
-            return $viewerSolved && (int)($attempt['is_correct'] ?? 0) === 1;
+            $userId = (int)($attempt['user_id'] ?? 0);
+            if (!$isRevealVisible && ($viewerUserId <= 0 || $userId !== $viewerUserId)) {
+                return false;
+            }
+
+            return trim((string)($attempt['guess_title'] ?? '') . (string)($attempt['guess_artist'] ?? '')) !== '';
         }));
+
+        return array_slice($visible, -MQ_VISIBLE_MISSED_ATTEMPTS_LIMIT);
     }
 
     private function buildSuggestionHoldSnapshot(int $roundId): array
