@@ -41,6 +41,7 @@ Point a surveiller lors de la reprise: les delais de buffering YouTube sur TV ne
 - Frontend en JS/CSS/HTML (sans framework)
 - Auth obligatoire (session partagee via API auth)
 - Creation/rejoindre un lobby
+- Mode de lobby `participative` ou `autoplay`: le mode automatique reutilise le tirage/manches mais n'attend aucune reponse joueur, aucun score et aucun vote.
 - Parametrage du lobby reserve au createur
 - Catalogue musical structure par categories et familles
 - Validation manuelle des nouvelles musiques avant usage en partie
@@ -71,6 +72,7 @@ Migration:
 - `sql/012_melodyquest_presence_and_attempts.sql`
 - `sql/013_melodyquest_answer_similarity_default_80.sql`
 - `sql/014_melodyquest_away_bonus.sql`
+- `sql/015_melodyquest_autoplay_mode.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -83,6 +85,7 @@ La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/
 La migration `012` ajoute la presence joueur (`presence_status`, `removed_at`, `removed_by`) et `mq_round_answer_attempts` pour conserver les essais de reponse sans remplacer le score courant.
 La migration `013` passe la valeur SQL par defaut de `mq_lobbies.answer_similarity_threshold` a `80` pour les nouveaux salons. Les salons existants gardent leur valeur.
 La migration `014` ajoute `mq_round_away_bonuses`, trace idempotente des points de compensation attribues aux joueurs absents quand le premier joueur trouve une manche.
+La migration `015` ajoute `mq_lobbies.game_mode` avec `participative` par defaut et `autoplay` pour les blindtests automatiques sans saisie/score/vote.
 
 ## Import catalogue CSV
 
@@ -147,6 +150,7 @@ Authentifie:
 - `GET action=listTracks&family_id=...` (optionnel)
 
 `updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
+`createLobby` et `updateLobbyConfig` acceptent `game_mode` (`participative`/`autoplay`). Les salons `autoplay` restent des salons techniques pilotant les manches et ne sont pas listés dans `listPublicLobbies`.
 `touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. Le createur peut aussi fournir `target_user_id` pour passer un autre joueur present/absent sans le retirer du salon. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.
 `voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.

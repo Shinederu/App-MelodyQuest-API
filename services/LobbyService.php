@@ -38,6 +38,8 @@ class LobbyService
             $visibility = 'private';
         }
 
+        $gameMode = $this->normalizeGameMode($payload['game_mode'] ?? 'participative');
+
         $guessMode = strtolower((string)($payload['guess_mode'] ?? 'both'));
         if (!in_array($guessMode, ['title', 'artist', 'both'], true)) {
             $guessMode = 'both';
@@ -59,14 +61,15 @@ class LobbyService
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO mq_lobbies
-                (lobby_code, name, owner_user_id, status, visibility, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold)
-                VALUES (:code, :name, :owner, "waiting", :visibility, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold)'
+                (lobby_code, name, owner_user_id, status, visibility, game_mode, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold)
+                VALUES (:code, :name, :owner, "waiting", :visibility, :game_mode, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold)'
             );
             $stmt->execute([
                 'code' => $code,
                 'name' => $name,
                 'owner' => $ownerUserId,
                 'visibility' => $visibility,
+                'game_mode' => $gameMode,
                 'max_players' => $maxPlayers,
                 'total_rounds' => $totalRounds,
                 'round_duration' => $roundDuration,
@@ -383,6 +386,10 @@ class LobbyService
             }
             $fields[] = 'visibility = :visibility';
             $params['visibility'] = $visibility;
+        }
+        if (isset($payload['game_mode'])) {
+            $fields[] = 'game_mode = :game_mode';
+            $params['game_mode'] = $this->normalizeGameMode($payload['game_mode']);
         }
         if (isset($payload['max_players'])) {
             $maxPlayers = max(2, min((int)$payload['max_players'], MQ_MAX_MAX_PLAYERS));
@@ -1233,6 +1240,7 @@ class LobbyService
              FROM mq_lobbies l
              JOIN users u ON u.id = l.owner_user_id
              WHERE l.visibility = "public"
+               AND l.game_mode = "participative"
                AND l.status IN ("waiting", "playing")
              ORDER BY l.updated_at DESC
              LIMIT 100'
@@ -1458,6 +1466,7 @@ class LobbyService
                 GROUP BY lobby_id
              ) p ON p.lobby_id = l.id
              WHERE l.visibility = "public"
+               AND l.game_mode = "participative"
                AND l.status IN ("waiting", "playing")'
         );
         $row = $stmt->fetch();
@@ -2649,6 +2658,12 @@ class LobbyService
 
         $value = strtolower(trim((string)$raw));
         return in_array($value, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
+    }
+
+    private function normalizeGameMode($raw): string
+    {
+        $mode = strtolower(trim((string)$raw));
+        return in_array($mode, ['participative', 'autoplay'], true) ? $mode : 'participative';
     }
 
     private function encodeCategoryIds(array $ids): ?string
