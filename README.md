@@ -73,6 +73,7 @@ Migration:
 - `sql/013_melodyquest_answer_similarity_default_80.sql`
 - `sql/014_melodyquest_away_bonus.sql`
 - `sql/015_melodyquest_autoplay_mode.sql`
+- `sql/016_melodyquest_category_visible_default.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -86,6 +87,7 @@ La migration `012` ajoute la presence joueur (`presence_status`, `removed_at`, `
 La migration `013` passe la valeur SQL par defaut de `mq_lobbies.answer_similarity_threshold` a `80` pour les nouveaux salons. Les salons existants gardent leur valeur.
 La migration `014` ajoute `mq_round_away_bonuses`, trace idempotente des points de compensation attribues aux joueurs absents quand le premier joueur trouve une manche.
 La migration `015` ajoute `mq_lobbies.game_mode` avec `participative` par defaut et `autoplay` pour les blindtests automatiques sans saisie/score/vote.
+La migration `016` passe la valeur SQL par defaut de `mq_lobbies.show_track_category` a `1` pour les nouveaux salons. Les salons existants gardent leur valeur.
 
 ## Import catalogue CSV
 
@@ -149,7 +151,7 @@ Authentifie:
 - `GET action=listFamilies&category_id=...` (optionnel)
 - `GET action=listTracks&family_id=...` (optionnel)
 
-`updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
+`updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`. `createLobby` active `show_track_category` par defaut si le champ n'est pas fourni.
 `createLobby` et `updateLobbyConfig` acceptent `game_mode` (`participative`/`autoplay`). Les salons `autoplay` sont de vrais salons passifs: ils gardent code, membres, partage et liaison TV, mais n'attendent aucune reponse joueur, aucun score et aucun vote. `listPublicLobbies` filtre par `game_mode`; les snapshots Mercure publient les salons publics des deux modes et le frontend filtre selon le switch actif/passif.
 `touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. Le createur peut aussi fournir `target_user_id` pour passer un autre joueur present/absent sans le retirer du salon. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.

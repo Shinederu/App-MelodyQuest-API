@@ -45,7 +45,7 @@ class LobbyService
             $guessMode = 'both';
         }
 
-        $showTrackCategory = $this->normalizeBoolean($payload['show_track_category'] ?? false);
+        $showTrackCategory = $this->normalizeBoolean($payload['show_track_category'] ?? true);
         $allowEarlyRevealVote = $this->normalizeBoolean($payload['allow_early_reveal_vote'] ?? true);
         $answerSimilarityThreshold = $this->validateAnswerSimilarityThreshold(
             $payload['answer_similarity_threshold'] ?? MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD

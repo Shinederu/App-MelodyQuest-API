@@ -11,7 +11,7 @@ SET @mq_has_show_track_category := (
 
 SET @mq_add_show_track_category := IF(
   @mq_has_show_track_category = 0,
-  'ALTER TABLE mq_lobbies ADD COLUMN show_track_category TINYINT(1) NOT NULL DEFAULT 0 AFTER selected_category_ids',
+  'ALTER TABLE mq_lobbies ADD COLUMN show_track_category TINYINT(1) NOT NULL DEFAULT 1 AFTER selected_category_ids',
   'SELECT 1'
 );
 
