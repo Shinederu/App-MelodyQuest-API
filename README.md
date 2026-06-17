@@ -144,13 +144,13 @@ Authentifie:
 - `POST action=linkTvPairing`
 - `GET action=getRoundState&lobby_id=...`
 - `GET action=getScoreboard&lobby_id=...`
-- `GET action=listPublicLobbies`
+- `GET action=listPublicLobbies&game_mode=participative|autoplay` (`participative` par defaut)
 - `GET action=listCategories`
 - `GET action=listFamilies&category_id=...` (optionnel)
 - `GET action=listTracks&family_id=...` (optionnel)
 
 `updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`.
-`createLobby` et `updateLobbyConfig` acceptent `game_mode` (`participative`/`autoplay`). Les salons `autoplay` restent des salons techniques pilotant les manches et ne sont pas listés dans `listPublicLobbies`.
+`createLobby` et `updateLobbyConfig` acceptent `game_mode` (`participative`/`autoplay`). Les salons `autoplay` sont de vrais salons passifs: ils gardent code, membres, partage et liaison TV, mais n'attendent aucune reponse joueur, aucun score et aucun vote. `listPublicLobbies` filtre par `game_mode`; les snapshots Mercure publient les salons publics des deux modes et le frontend filtre selon le switch actif/passif.
 `touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. Le createur peut aussi fournir `target_user_id` pour passer un autre joueur present/absent sans le retirer du salon. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
 `voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.
 `voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.

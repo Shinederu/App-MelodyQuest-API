@@ -1191,10 +1191,10 @@ class LobbyService
     public function getPublicLobbiesRealtimeSnapshot(): array
     {
         $this->cleanupStaleOwnerLobbies();
-        $data = $this->listPublicLobbies();
+        $data = $this->listPublicLobbies(null);
 
         return [
-            'revision' => $this->computePublicLobbiesRevision(),
+            'revision' => $this->computePublicLobbiesRevision(null),
             'items' => $data['items'] ?? [],
             'server_time' => gmdate('c'),
         ];
@@ -1230,21 +1230,27 @@ class LobbyService
 
         return strtoupper(trim((string)($row['lobby_code'] ?? '')));
     }
-    public function listPublicLobbies(): array
+    public function listPublicLobbies(?string $gameMode = 'participative'): array
     {
         $this->cleanupStaleOwnerLobbies();
 
-        $stmt = $this->db->query(
-            'SELECT l.id, l.lobby_code, l.name, l.status, l.max_players, l.owner_user_id, u.username AS owner_username, u.avatar_url AS owner_avatar_url,
+        $mode = $gameMode === null ? null : $this->normalizeGameMode($gameMode);
+        $modeFilter = $mode === null ? '' : ' AND l.game_mode = :game_mode';
+        $stmt = $this->db->prepare(
+            'SELECT l.id, l.lobby_code, l.name, l.status, l.visibility, l.game_mode, l.max_players, l.owner_user_id, u.username AS owner_username, u.avatar_url AS owner_avatar_url,
                     (SELECT COUNT(*) FROM mq_lobby_players lp WHERE lp.lobby_id = l.id AND lp.presence_status <> "removed") AS players_count
              FROM mq_lobbies l
              JOIN users u ON u.id = l.owner_user_id
              WHERE l.visibility = "public"
-               AND l.game_mode = "participative"
+               ' . $modeFilter . '
                AND l.status IN ("waiting", "playing")
              ORDER BY l.updated_at DESC
              LIMIT 100'
         );
+        if ($mode !== null) {
+            $stmt->bindValue('game_mode', $mode);
+        }
+        $stmt->execute();
 
         $items = $this->hydrateAvatarRows($stmt->fetchAll(), 'owner_avatar_url', 'owner_user_id');
 
@@ -1452,9 +1458,11 @@ class LobbyService
         return abs((int)crc32($seed));
     }
 
-    private function computePublicLobbiesRevision(): int
+    private function computePublicLobbiesRevision(?string $gameMode = 'participative'): int
     {
-        $stmt = $this->db->query(
+        $mode = $gameMode === null ? null : $this->normalizeGameMode($gameMode);
+        $modeFilter = $mode === null ? '' : ' AND l.game_mode = :game_mode';
+        $stmt = $this->db->prepare(
             'SELECT COUNT(*) AS c,
                     COALESCE(MAX(UNIX_TIMESTAMP(l.updated_at)), 0) AS max_updated,
                     COALESCE(SUM(l.sync_revision), 0) AS sync_sum,
@@ -1466,9 +1474,13 @@ class LobbyService
                 GROUP BY lobby_id
              ) p ON p.lobby_id = l.id
              WHERE l.visibility = "public"
-               AND l.game_mode = "participative"
+               ' . $modeFilter . '
                AND l.status IN ("waiting", "playing")'
         );
+        if ($mode !== null) {
+            $stmt->bindValue('game_mode', $mode);
+        }
+        $stmt->execute();
         $row = $stmt->fetch();
         if (!$row) {
             return 0;

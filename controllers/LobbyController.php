@@ -311,7 +311,8 @@ class LobbyController
 
     public function listPublicLobbies(): void
     {
-        $data = $this->service->listPublicLobbies();
+        $gameMode = isset($_GET['game_mode']) ? (string)$_GET['game_mode'] : 'participative';
+        $data = $this->service->listPublicLobbies($gameMode);
         if ($this->mercure->canPublish()) {
             $data['realtime'] = [
                 'transport' => 'mercure',
