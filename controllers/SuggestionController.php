@@ -30,4 +30,16 @@ class SuggestionController
         $status = (string)($payload['status'] ?? 'pending');
         json_success('Suggestion mise a jour', $this->service->updateStatus($id, $status, $userId));
     }
+
+    public function update(array $payload): void
+    {
+        $id = (int)($payload['id'] ?? 0);
+        json_success('Suggestion enregistree', $this->service->update($id, $payload));
+    }
+
+    public function apply(int $userId, array $payload): void
+    {
+        $id = (int)($payload['id'] ?? 0);
+        json_success('Suggestion appliquee', $this->service->apply($id, $userId, $payload));
+    }
 }

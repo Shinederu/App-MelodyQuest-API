@@ -74,6 +74,7 @@ Migration:
 - `sql/014_melodyquest_away_bonus.sql`
 - `sql/015_melodyquest_autoplay_mode.sql`
 - `sql/016_melodyquest_category_visible_default.sql`
+- `sql/017_melodyquest_admin_suggestion_review.sql`
 - Validation pre-prod: `PROD_TEST_CHECKLIST.md`
 
 La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
@@ -88,6 +89,7 @@ La migration `013` passe la valeur SQL par defaut de `mq_lobbies.answer_similari
 La migration `014` ajoute `mq_round_away_bonuses`, trace idempotente des points de compensation attribues aux joueurs absents quand le premier joueur trouve une manche.
 La migration `015` ajoute `mq_lobbies.game_mode` avec `participative` par defaut et `autoplay` pour les blindtests automatiques sans saisie/score/vote.
 La migration `016` passe la valeur SQL par defaut de `mq_lobbies.show_track_category` a `1` pour les nouveaux salons. Les salons existants gardent leur valeur.
+La migration `017` ajoute les champs de travail admin des suggestions (`admin_category_id`, `admin_family_name`, `admin_start_offset_seconds`) et la trace d'application (`applied_track_id`, `applied_at`).
 
 ## Import catalogue CSV
 
@@ -205,12 +207,18 @@ Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin glob
 - `POST action=validateTrack`
 - `POST action=unvalidateTrack`
 - `GET action=listSuggestions&status=pending|reviewed|rejected|all`
+- `GET action=listAnswerAttempts&outcome=wrong|correct|scored|all&search=...`
+- `POST action=updateSuggestion`
+- `POST action=applySuggestion`
 - `POST action=updateSuggestionStatus`
 - `DELETE action=deleteCategory`
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`
 
 `validateTrack` accepte au minimum `track_id` ou `id`. Il peut aussi recevoir les champs de correction `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url` ou `start_offset_seconds`; dans ce cas l'API applique ces corrections puis valide la musique dans une meme transaction. Quand `aliases` est fourni, la liste remplace les alias acceptes de l'oeuvre cible via `mq_family_aliases`.
+`updateSuggestion` enregistre les champs editable d'une suggestion joueur sans modifier le catalogue.
+`applySuggestion` applique une suggestion au catalogue: une correction met a jour/valide la musique liee et ajoute l'alias propose sans perdre les alias existants; une nouvelle musique cree une piste validee dans la categorie/oeuvre choisie par l'admin. La suggestion est ensuite marquee `reviewed` avec `applied_track_id` et `applied_at`.
+`listAnswerAttempts` expose les groupes de reponses et les essais recents issus de `mq_round_answer_attempts` pour aider l'admin a reperer des alias, corrections ou idees de musiques.
 
 ## Configuration
 

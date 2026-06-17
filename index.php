@@ -19,6 +19,7 @@ require_once __DIR__ . '/middlewares/AdminMiddleware.php';
 require_once __DIR__ . '/controllers/LobbyController.php';
 require_once __DIR__ . '/controllers/CatalogController.php';
 require_once __DIR__ . '/controllers/SuggestionController.php';
+require_once __DIR__ . '/controllers/AdminInsightsController.php';
 require_once __DIR__ . '/controllers/TvController.php';
 
 $body = get_body();
@@ -30,6 +31,7 @@ try {
     $lobbyController = new LobbyController();
     $catalogController = new CatalogController();
     $suggestionController = new SuggestionController();
+    $adminInsightsController = new AdminInsightsController();
     $tvController = new TvController();
 
     switch ($method) {
@@ -80,6 +82,11 @@ try {
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
                     $suggestionController->list($_GET);
+                    break;
+                case 'listAnswerAttempts':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $adminInsightsController->listAnswerAttempts($_GET);
                     break;
                 case 'getTvPairing':
                     $tvController->getPairing($_GET);
@@ -206,6 +213,16 @@ try {
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);
                     $suggestionController->updateStatus($userId, $body);
+                    break;
+                case 'updateSuggestion':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $suggestionController->update($body);
+                    break;
+                case 'applySuggestion':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $suggestionController->apply($userId, $body);
                     break;
                 default:
                     json_error('Unknown action for POST method', 404);

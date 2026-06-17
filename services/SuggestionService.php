@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/DatabaseService.php';
+require_once __DIR__ . '/CatalogService.php';
 require_once __DIR__ . '/../utils/youtube.php';
 
 class SuggestionService
@@ -91,10 +92,15 @@ class SuggestionService
 
         $where = $status === 'all' ? '' : 'WHERE s.status = :status';
         $stmt = $this->db->prepare(
-            'SELECT s.*, u.username, reviewer.username AS reviewer_username
+            'SELECT s.*,
+                    u.username,
+                    reviewer.username AS reviewer_username,
+                    applied.title AS applied_track_title,
+                    applied.artist AS applied_track_artist
              FROM mq_player_suggestions s
              LEFT JOIN users u ON u.id = s.user_id
              LEFT JOIN users reviewer ON reviewer.id = s.reviewed_by_user_id
+             LEFT JOIN mq_tracks applied ON applied.id = s.applied_track_id
              ' . $where . '
              ORDER BY s.created_at DESC
              LIMIT 200'
@@ -103,6 +109,52 @@ class SuggestionService
         $stmt->execute($params);
 
         return $stmt->fetchAll();
+    }
+
+    public function update(int $id, array $payload): array
+    {
+        $suggestion = $this->requireSuggestion($id);
+        $draft = $this->buildDraft($suggestion, $payload);
+        $this->persistDraft($id, $draft);
+
+        return ['id' => $id] + $draft;
+    }
+
+    public function apply(int $id, int $reviewerUserId, array $payload): array
+    {
+        $suggestion = $this->requireSuggestion($id);
+        $draft = $this->buildDraft($suggestion, $payload);
+        $this->persistDraft($id, $draft);
+
+        $catalogService = new CatalogService();
+        if ((string)$suggestion['suggestion_type'] === 'new_track') {
+            $result = $this->applyNewTrackSuggestion($catalogService, $reviewerUserId, $suggestion, $draft);
+        } else {
+            $result = $this->applyTrackCorrectionSuggestion($catalogService, $reviewerUserId, $suggestion, $draft);
+        }
+
+        $trackId = (int)($result['track_id'] ?? $result['id'] ?? 0);
+        $stmt = $this->db->prepare(
+            'UPDATE mq_player_suggestions
+             SET status = "reviewed",
+                 reviewed_at = NOW(3),
+                 reviewed_by_user_id = :reviewer,
+                 applied_track_id = :track_id,
+                 applied_at = NOW(3)
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            'reviewer' => $reviewerUserId,
+            'track_id' => $trackId ?: null,
+            'id' => $id,
+        ]);
+
+        return [
+            'id' => $id,
+            'status' => 'reviewed',
+            'track_id' => $trackId,
+            'applied' => $result,
+        ];
     }
 
     public function updateStatus(int $id, string $status, int $reviewerUserId): array
@@ -130,6 +182,231 @@ class SuggestionService
         ]);
 
         return ['id' => $id, 'status' => $status];
+    }
+
+    private function applyTrackCorrectionSuggestion(CatalogService $catalogService, int $reviewerUserId, array $suggestion, array $draft): array
+    {
+        $trackId = (int)($suggestion['track_id'] ?? 0);
+        if ($trackId <= 0) {
+            throw new RuntimeException('Aucune musique liee a cette correction');
+        }
+
+        $payload = ['track_id' => $trackId];
+        if ($draft['proposed_title'] !== null) {
+            $payload['title'] = $draft['proposed_title'];
+        }
+        if ($draft['proposed_artist'] !== null) {
+            $payload['artist'] = $draft['proposed_artist'];
+        }
+        if ($draft['proposed_youtube_url'] !== null) {
+            $payload['youtube_url'] = $draft['proposed_youtube_url'];
+        } elseif ($draft['proposed_youtube_video_id'] !== null) {
+            $payload['youtube_video_id'] = $draft['proposed_youtube_video_id'];
+        }
+        if ($draft['admin_start_offset_seconds'] !== null) {
+            $payload['start_offset_seconds'] = $draft['admin_start_offset_seconds'];
+        }
+        if ($draft['proposed_alias'] !== null) {
+            $payload['aliases'] = $this->mergeTrackAliases($trackId, $draft['proposed_alias']);
+        }
+
+        if (count($payload) <= 1) {
+            throw new RuntimeException('Aucune correction applicable');
+        }
+
+        $result = $catalogService->validateTrack($reviewerUserId, $trackId, $payload);
+        $result['track_id'] = $trackId;
+        $result['type'] = 'track_correction';
+
+        return $result;
+    }
+
+    private function applyNewTrackSuggestion(CatalogService $catalogService, int $reviewerUserId, array $suggestion, array $draft): array
+    {
+        $categoryId = (int)($draft['admin_category_id'] ?? 0);
+        if ($categoryId <= 0) {
+            throw new RuntimeException('Choisis une categorie avant de creer la musique');
+        }
+
+        $familyName = $draft['admin_family_name'] ?: $draft['proposed_alias'];
+        if ($familyName === null || trim($familyName) === '') {
+            throw new RuntimeException('Indique une oeuvre ou reponse attendue');
+        }
+        if ($draft['proposed_title'] === null) {
+            throw new RuntimeException('Indique un libelle de piste');
+        }
+        if ($draft['proposed_youtube_url'] === null && $draft['proposed_youtube_video_id'] === null) {
+            throw new RuntimeException('Indique une URL YouTube valide');
+        }
+
+        $createPayload = [
+            'category_id' => $categoryId,
+            'family_name' => $familyName,
+            'title' => $draft['proposed_title'],
+            'artist' => $draft['proposed_artist'],
+            'youtube_url' => $draft['proposed_youtube_url'],
+            'youtube_video_id' => $draft['proposed_youtube_video_id'],
+            'start_offset_seconds' => $draft['admin_start_offset_seconds'] ?? 0,
+            'is_active' => 1,
+        ];
+
+        $created = $catalogService->createTrack($reviewerUserId, $createPayload);
+        $trackId = (int)($created['id'] ?? 0);
+        if ($trackId <= 0) {
+            throw new RuntimeException('Creation de musique impossible');
+        }
+
+        $validatePayload = ['track_id' => $trackId];
+        if ($draft['proposed_alias'] !== null && $this->normalizeForCompare($draft['proposed_alias']) !== $this->normalizeForCompare($familyName)) {
+            $validatePayload['aliases'] = [$draft['proposed_alias']];
+        }
+
+        $validated = $catalogService->validateTrack($reviewerUserId, $trackId, $validatePayload);
+
+        return [
+            'type' => 'new_track',
+            'track_id' => $trackId,
+            'created' => $created,
+            'validated' => $validated,
+        ];
+    }
+
+    private function requireSuggestion(int $id): array
+    {
+        if ($id <= 0) {
+            throw new RuntimeException('Suggestion introuvable');
+        }
+
+        $stmt = $this->db->prepare(
+            'SELECT *
+             FROM mq_player_suggestions
+             WHERE id = :id
+             LIMIT 1'
+        );
+        $stmt->execute(['id' => $id]);
+        $row = $stmt->fetch();
+
+        if (!$row) {
+            throw new RuntimeException('Suggestion introuvable');
+        }
+
+        return $row;
+    }
+
+    private function buildDraft(array $suggestion, array $payload): array
+    {
+        $proposedYoutubeUrl = $this->cleanDraftText($payload, $suggestion, 'proposed_youtube_url', 255);
+        $proposedVideoId = $this->cleanDraftText($payload, $suggestion, 'proposed_youtube_video_id', 32);
+
+        if ($proposedYoutubeUrl !== null) {
+            $normalized = mq_normalize_youtube_video_id($proposedYoutubeUrl);
+            if ($normalized === '') {
+                throw new RuntimeException('URL YouTube invalide');
+            }
+            $proposedVideoId = $normalized;
+            $proposedYoutubeUrl = mq_build_youtube_watch_url($normalized);
+        } elseif ($proposedVideoId !== null) {
+            $normalized = mq_normalize_youtube_video_id($proposedVideoId);
+            if ($normalized === '') {
+                throw new RuntimeException('Identifiant YouTube invalide');
+            }
+            $proposedVideoId = $normalized;
+            $proposedYoutubeUrl = mq_build_youtube_watch_url($normalized);
+        }
+
+        return [
+            'proposed_title' => $this->cleanDraftText($payload, $suggestion, 'proposed_title', 220),
+            'proposed_artist' => $this->cleanDraftText($payload, $suggestion, 'proposed_artist', 160),
+            'proposed_youtube_url' => $proposedYoutubeUrl,
+            'proposed_youtube_video_id' => $proposedVideoId,
+            'proposed_alias' => $this->cleanDraftText($payload, $suggestion, 'proposed_alias', 160),
+            'admin_category_id' => $this->cleanDraftInt($payload, $suggestion, 'admin_category_id'),
+            'admin_family_name' => $this->cleanDraftText($payload, $suggestion, 'admin_family_name', 160),
+            'admin_start_offset_seconds' => $this->cleanDraftInt($payload, $suggestion, 'admin_start_offset_seconds'),
+            'note' => $this->cleanDraftText($payload, $suggestion, 'note', 2000),
+        ];
+    }
+
+    private function persistDraft(int $id, array $draft): void
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE mq_player_suggestions
+             SET proposed_title = :proposed_title,
+                 proposed_artist = :proposed_artist,
+                 proposed_youtube_url = :proposed_youtube_url,
+                 proposed_youtube_video_id = :proposed_youtube_video_id,
+                 proposed_alias = :proposed_alias,
+                 admin_category_id = :admin_category_id,
+                 admin_family_name = :admin_family_name,
+                 admin_start_offset_seconds = :admin_start_offset_seconds,
+                 note = :note
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            'proposed_title' => $draft['proposed_title'],
+            'proposed_artist' => $draft['proposed_artist'],
+            'proposed_youtube_url' => $draft['proposed_youtube_url'],
+            'proposed_youtube_video_id' => $draft['proposed_youtube_video_id'],
+            'proposed_alias' => $draft['proposed_alias'],
+            'admin_category_id' => $draft['admin_category_id'],
+            'admin_family_name' => $draft['admin_family_name'],
+            'admin_start_offset_seconds' => $draft['admin_start_offset_seconds'],
+            'note' => $draft['note'],
+            'id' => $id,
+        ]);
+    }
+
+    private function cleanDraftText(array $payload, array $suggestion, string $key, int $maxLength): ?string
+    {
+        if (array_key_exists($key, $payload)) {
+            return $this->cleanText($payload[$key], $maxLength);
+        }
+
+        return $this->cleanText($suggestion[$key] ?? null, $maxLength);
+    }
+
+    private function cleanDraftInt(array $payload, array $suggestion, string $key): ?int
+    {
+        $value = array_key_exists($key, $payload) ? $payload[$key] : ($suggestion[$key] ?? null);
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return max(0, (int)$value);
+    }
+
+    private function mergeTrackAliases(int $trackId, string $proposedAlias): array
+    {
+        $stmt = $this->db->prepare(
+            'SELECT f.name AS family_name, a.alias
+             FROM mq_tracks t
+             JOIN mq_families f ON f.id = t.family_id
+             LEFT JOIN mq_family_aliases a ON a.family_id = f.id
+             WHERE t.id = :track_id
+             ORDER BY a.alias ASC'
+        );
+        $stmt->execute(['track_id' => $trackId]);
+
+        $aliases = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $alias = trim((string)($row['alias'] ?? ''));
+            if ($alias !== '') {
+                $aliases[] = $alias;
+            }
+        }
+
+        $aliases[] = $proposedAlias;
+
+        $unique = [];
+        foreach ($aliases as $alias) {
+            $key = $this->normalizeForCompare($alias);
+            if ($key === '' || array_key_exists($key, $unique)) {
+                continue;
+            }
+            $unique[$key] = $alias;
+        }
+
+        return array_values($unique);
     }
 
     private function getTrackContext(int $trackId): ?array
@@ -214,5 +491,14 @@ class SuggestionService
         }
 
         return substr($text, 0, $maxLength);
+    }
+
+    private function normalizeForCompare(string $value): string
+    {
+        $value = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+        $value = strtolower(trim((string)$value));
+        $value = preg_replace('/\s+/', ' ', $value) ?? '';
+        $value = preg_replace('/[^a-z0-9 ]/', '', $value) ?? '';
+        return trim($value);
     }
 }
