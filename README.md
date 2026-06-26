@@ -2,9 +2,21 @@
 
 ## Role
 
-MelodyQuest est un blindtest multijoueur base sur une authentification centralisee partagee sur le domaine/sous-domaines Shinederu.
+Cette API est le backend proprietaire de MelodyQuest.
 
-Cette API est le proprietaire backend de MelodyQuest: salons, manches, reponses, catalogue musical, validation, suggestions joueurs, liaison TV et publication temps reel.
+Elle gere:
+
+- salons actifs et passifs;
+- manches, tirage musical, reponses, votes et scores;
+- catalogue musical;
+- validation et corrections admin;
+- suggestions joueurs;
+- historique des tentatives de reponse;
+- presence manuelle;
+- liaison TV;
+- snapshots Mercure.
+
+Le frontend source vit dans `P:\DEV\GitHub\App-MelodyQuest`.
 
 ## Repo et deploiement
 
@@ -13,87 +25,116 @@ Cette API est le proprietaire backend de MelodyQuest: salons, manches, reponses,
 - Runtime PROD: `P:\PROD\API\melodyquest`
 - Endpoint public: `https://api.shinederu.ch/melodyquest/`
 - Code projet stable: `melodyquest`
+- Front consommateur: `https://melodyquest.shinederu.ch/`
 
-Le dossier PROD ne doit pas etre un clone du repo. Il ne doit contenir que le runtime API necessaire:
+Le dossier PROD ne doit pas etre un clone du repo.
 
-- `index.php`;
-- `config\`;
-- `controllers\`;
-- `middlewares\`;
-- `services\`;
-- `utils\`.
+Fichiers/dossiers runtime autorises en PROD:
 
-Ne pas deployer en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches, brouillons ou exports.
+- `index.php`
+- `config\`
+- `controllers\`
+- `middlewares\`
+- `services\`
+- `utils\`
 
-## Etat de pause - 2026-06-12
+Ne pas deployer en PROD:
 
-Le projet MelodyQuest est mis en pause dans un etat stable de reprise. Les derniers commits applicatifs lies a MelodyQuest avant cette pause sont:
+- `.git`
+- `.github`
+- `README.md`
+- `AGENTS.md`
+- `PROD_TEST_CHECKLIST.md`
+- `.env.example`
+- `sql\`
+- `scripts\`
+- tests
+- caches
+- brouillons
+- exports temporaires
 
-- frontend `App-MelodyQuest`: `295dd11 Restore basic MelodyQuest TV player`;
-- backend `App-MelodyQuest-API`: `28dbdda Remove MelodyQuest TV ready playback flow`.
+## Etat courant
 
-Le mode TV public reste actif, mais il utilise de nouveau un lecteur YouTube iframe simple cote frontend. L'action experimentale `markTvRoundReady`, le demarrage accelere par signal "TV prete" et les constantes `MQ_TV_ROUND_PRELOAD_MAX_WAIT_SECONDS` / `MQ_TV_READY_START_LEAD_SECONDS` ont ete retires. Les tables `mq_tv_pairings` et `mq_round_preloads` restent utiles: la premiere lie une TV a un salon, la seconde prepare la file de pistes a venir cote backend.
-
-Point a surveiller lors de la reprise: les delais de buffering YouTube sur TV ne sont pas resolus de facon definitive. Les essais de double lecteur TV ont cree des regressions son/video et ne doivent pas etre remis tels quels.
+- Deux modes de salon existent:
+  - `participative`: mode actif avec reponses, scores, votes et classement;
+  - `autoplay`: mode passif avec enchainement automatique, sans score, sans votes et sans reponse attendue.
+- Les salons passifs restent de vrais salons: code, membres, partage et liaison TV.
+- Les salons passifs sont prives par defaut cote frontend.
+- La categorie visible est activee par defaut pour les nouveaux salons.
+- La precision des reponses est a `80%` par defaut pour les nouveaux salons.
+- La selection musicale est equilibree entre categories selectionnees quand c'est possible.
+- La presence joueur est manuelle (`active` / `away`).
+- Le createur peut passer un joueur present/absent ou l'exclure.
+- Les joueurs absents ne bloquent pas les votes/transitions et recoivent un bonus de compensation.
+- Les essais de reponse sont conserves en DB pour admin/statistiques.
+- Les suggestions joueurs peuvent etre editees, refusees, marquees traitees ou appliquees directement au catalogue.
+- Les avatars historiques `action=getAvatar` sont normalises vers l'API Auth active avant retour frontend.
+- Le mode TV frontend utilise un lecteur YouTube simple; l'action experimentale `markTvRoundReady` n'existe plus.
 
 ## Contraintes produit
 
-- Frontend en JS/CSS/HTML (sans framework)
-- Auth obligatoire (session partagee via API auth)
-- Creation/rejoindre un lobby
-- Mode de lobby `participative` ou `autoplay`: le mode automatique reutilise le tirage/manches mais n'attend aucune reponse joueur, aucun score et aucun vote.
-- Parametrage du lobby reserve au createur
-- Catalogue musical structure par categories et familles
-- Validation manuelle des nouvelles musiques avant usage en partie
-- Stockage des pistes via identifiant video YouTube (aucun fichier audio en base)
-- Lecture synchronisee entre joueurs via etat de lecture partage
-- Creation des manches avec une courte synchronisation serveur (`MQ_ROUND_PRELOAD_SECONDS`) et une file de pistes stockee en base pour connaitre les prochaines musiques sans recalculer le tirage au dernier moment.
-- Repartition des musiques par categorie equilibree sur la duree du salon: si plusieurs categories sont selectionnees, le backend vise un nombre equivalent de manches par categorie; une categorie avec trop peu de musiques donne son maximum, puis les manches restantes sont redistribuees entre les autres categories.
-- Avatars joueurs normalises cote backend: les anciennes URLs `action=getAvatar` stockees en base sont reconstruites vers l'API Auth active avant d'etre renvoyees aux lobbies, salons publics, classements et votes.
-- Administration musicale reservee au droit central `melodyquest.catalog.manage` ou au super-admin global; `users.role='admin'` reste seulement un fallback de transition.
+- Auth obligatoire pour jouer.
+- Proposition publique de nouvelle musique possible sans session.
+- Stockage des pistes par identifiant YouTube; aucun fichier audio local.
+- YouTube reste la source principale.
+- Commandes metier via HTTP API.
+- Mercure publie les snapshots et ne remplace pas les endpoints HTTP.
+- Administration musicale reservee a `melodyquest.catalog.manage` ou au super-admin global.
+- `users.role='admin'` reste seulement un fallback de transition.
+
+## Structure
+
+- `index.php`: routeur par action/methode HTTP.
+- `config\`: configuration runtime non secrete et constantes.
+- `controllers\`: validation payload et reponses HTTP.
+- `middlewares\`: session auth et permissions.
+- `services\`: logique metier, DB, selection, Mercure, suggestions.
+- `utils\`: helpers request/response/YouTube.
+- `sql\`: migrations source.
+- `scripts\`: outils CLI source, notamment import catalogue.
+
+Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infrastructure`.
 
 ## Base de donnees
 
-Le schema MelodyQuest est installe dans `ShinedeCore` avec des tables prefixees `mq_`.
+Schema partage: `ShinedeCore`.
 
-Migration:
+Tables MelodyQuest: prefixe `mq_*`.
 
-- `sql/001_melodyquest_core.sql`
-- `sql/002_melodyquest_lobby_settings.sql`
-- `sql/003_melodyquest_family_aliases.sql`
-- `sql/004_melodyquest_track_validation.sql`
-- `sql/005_melodyquest_track_video_id_only.sql`
-- `sql/006_melodyquest_merge_duplicate_categories.sql`
-- `sql/007_melodyquest_game_options.sql`
-- `sql/008_melodyquest_answer_similarity.sql`
-- `sql/009_melodyquest_player_suggestions.sql`
-- `sql/010_melodyquest_tv_pairings.sql`
-- `sql/011_melodyquest_round_preloads.sql`
-- `sql/012_melodyquest_presence_and_attempts.sql`
-- `sql/013_melodyquest_answer_similarity_default_80.sql`
-- `sql/014_melodyquest_away_bonus.sql`
-- `sql/015_melodyquest_autoplay_mode.sql`
-- `sql/016_melodyquest_category_visible_default.sql`
-- `sql/017_melodyquest_admin_suggestion_review.sql`
-- Validation pre-prod: `PROD_TEST_CHECKLIST.md`
+Migrations:
 
-La migration `002` ajoute `mq_lobbies.total_rounds` et `mq_lobbies.selected_category_ids`.
-La migration `006` fusionne les categories dupliquees vers les categories canoniques (`animes` -> `anime`, `musiques` -> `musique`, `jeux-video` -> `jeux`) et normalise les selections de categories stockees dans les lobbies.
-La migration `007` ajoute les options `mq_lobbies.show_track_category` et `mq_lobbies.allow_early_reveal_vote`, ainsi que la table `mq_round_reveal_votes` pour le vote de revelation anticipee.
-La migration `008` ajoute `mq_lobbies.answer_similarity_threshold`, seuil de correspondance entre `70` et `100`, avec `100` comme comportement strict historique.
-La migration `009` ajoute `mq_player_suggestions` pour les corrections/alias/nouvelles musiques proposes par les joueurs et `mq_round_suggestion_holds` pour bloquer temporairement le passage a la manche suivante pendant qu'un joueur remplit une proposition.
-La migration `010` ajoute `mq_tv_pairings`, table temporaire de liaison entre une television/ecran dedie et un salon MelodyQuest. Le code TV expire rapidement tant qu'il est en attente, puis la liaison est prolongee pendant que la TV synchronise le salon.
-La migration `011` ajoute `mq_round_preloads`, file de pistes a venir par salon/manche. Elle permet de choisir les musiques a venir sans recalculer le tirage au dernier moment. Le frontend TV utilise actuellement un lecteur YouTube actif simple et ne pilote plus de lecteur d'avance.
-La migration `012` ajoute la presence joueur (`presence_status`, `removed_at`, `removed_by`) et `mq_round_answer_attempts` pour conserver les essais de reponse sans remplacer le score courant.
-La migration `013` passe la valeur SQL par defaut de `mq_lobbies.answer_similarity_threshold` a `80` pour les nouveaux salons. Les salons existants gardent leur valeur.
-La migration `014` ajoute `mq_round_away_bonuses`, trace idempotente des points de compensation attribues aux joueurs absents quand le premier joueur trouve une manche.
-La migration `015` ajoute `mq_lobbies.game_mode` avec `participative` par defaut et `autoplay` pour les blindtests automatiques sans saisie/score/vote.
-La migration `016` passe la valeur SQL par defaut de `mq_lobbies.show_track_category` a `1` pour les nouveaux salons. Les salons existants gardent leur valeur.
-La migration `017` ajoute les champs de travail admin des suggestions (`admin_category_id`, `admin_family_name`, `admin_start_offset_seconds`) et la trace d'application (`applied_track_id`, `applied_at`).
+- `001_melodyquest_core.sql`: schema initial categories/familles/pistes/lobbies/manches/scores.
+- `002_melodyquest_lobby_settings.sql`: `total_rounds`, categories selectionnees.
+- `003_melodyquest_family_aliases.sql`: alias de familles/reponses.
+- `004_melodyquest_track_validation.sql`: validation des pistes.
+- `005_melodyquest_track_video_id_only.sql`: stockage video YouTube par ID.
+- `006_melodyquest_merge_duplicate_categories.sql`: fusion categories dupliquees et normalisation.
+- `007_melodyquest_game_options.sql`: options categorie visible, vote reveal et votes de revelation.
+- `008_melodyquest_answer_similarity.sql`: seuil de similarite des reponses.
+- `009_melodyquest_player_suggestions.sql`: suggestions joueurs et verrous de suggestion.
+- `010_melodyquest_tv_pairings.sql`: liaison TV.
+- `011_melodyquest_round_preloads.sql`: file de pistes a venir.
+- `012_melodyquest_presence_and_attempts.sql`: presence joueur, retrait non destructif et tentatives de reponse.
+- `013_melodyquest_answer_similarity_default_80.sql`: seuil par defaut SQL a `80`.
+- `014_melodyquest_away_bonus.sql`: bonus absent idempotent.
+- `015_melodyquest_autoplay_mode.sql`: `mq_lobbies.game_mode`.
+- `016_melodyquest_category_visible_default.sql`: categorie visible par defaut.
+- `017_melodyquest_admin_suggestion_review.sql`: champs de revue/application admin des suggestions.
+
+Regles DB:
+
+- Les migrations significatives restent dans `sql\`.
+- Les migrations doivent etre idempotentes quand c'est possible.
+- Ne jamais supprimer de donnees sans demande explicite.
+- Les anciennes donnees de tentatives/reponses sont conservees pour statistiques et analyse admin.
 
 ## Import catalogue CSV
 
-Un script CLI permet d'importer l'export blindtest multi-sections (groupes, playlists, liaisons, tracks) dans le schema MelodyQuest.
+Script:
+
+```text
+P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php
+```
 
 Mapping applique:
 
@@ -107,20 +148,43 @@ Mapping applique:
 
 Commandes utiles:
 
-- `php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --dry-run`
-- `php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --created-by=1`
+```powershell
+php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --dry-run
+php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --created-by=1
+```
 
-## Actions API (index.php)
+## API HTTP
 
-Base URL de production:
+Base production:
 
-- `https://api.shinederu.ch/melodyquest/`
-- Dossier source: `P:\DEV\GitHub\App-MelodyQuest-API`
-- Dossier runtime: `P:\PROD\API\melodyquest`
+```text
+https://api.shinederu.ch/melodyquest/
+```
 
-Les actions `POST` et `PUT` doivent etre envoyees en JSON (`Content-Type: application/json`) avec la cle `action` dans le corps. Les actions `GET` et `DELETE` lisent `action` depuis la query string.
+Format:
 
-Authentifie:
+- `GET` et `DELETE`: `action` en query string.
+- `POST` et `PUT`: JSON avec `Content-Type: application/json` et cle `action` dans le corps.
+
+Reponse succes:
+
+```json
+{
+  "success": true,
+  "data": {}
+}
+```
+
+Reponse erreur:
+
+```json
+{
+  "success": false,
+  "error": "Message lisible"
+}
+```
+
+## Actions authentifiees joueur
 
 - `POST action=createLobby`
 - `POST action=joinLobby`
@@ -148,54 +212,63 @@ Authentifie:
 - `POST action=linkTvPairing`
 - `GET action=getRoundState&lobby_id=...`
 - `GET action=getScoreboard&lobby_id=...`
-- `GET action=listPublicLobbies&game_mode=participative|autoplay` (`participative` par defaut)
+- `GET action=listPublicLobbies&game_mode=participative|autoplay`
 - `GET action=listCategories`
-- `GET action=listFamilies&category_id=...` (optionnel)
-- `GET action=listTracks&family_id=...` (optionnel)
+- `GET action=listFamilies&category_id=...`
+- `GET action=listTracks&family_id=...`
 
-`updateLobbyConfig` accepte aussi `visibility` (`public`/`private`), `show_track_category`, `allow_early_reveal_vote` et `answer_similarity_threshold`. `createLobby` active `show_track_category` par defaut si le champ n'est pas fourni.
-`createLobby` et `updateLobbyConfig` acceptent `game_mode` (`participative`/`autoplay`). Les salons `autoplay` sont de vrais salons passifs: ils gardent code, membres, partage et liaison TV, mais n'attendent aucune reponse joueur, aucun score et aucun vote. `listPublicLobbies` filtre par `game_mode`; les snapshots Mercure publient les salons publics des deux modes et le frontend filtre selon le switch actif/passif.
-`touchLobby` accepte `presence_status` (`active`, `away`). `away` garde le joueur dans le salon mais le retire des votes/attentes. Le createur peut aussi fournir `target_user_id` pour passer un autre joueur present/absent sans le retirer du salon. La presence est volontairement manuelle: fermer l'onglet ne marque plus automatiquement le joueur absent/inactif; le createur doit utiliser `kickPlayer` pour retirer un joueur qui ne revient pas. Les anciennes valeurs `inactive` sont normalisees en `active`.
-`voteRevealRound` enregistre un vote pour reveler la solution avant la fin du chrono; l'API refuse ce vote si l'option est desactivee, si la reponse est deja revelee ou si au moins un joueur a deja trouve. Depuis `009`, la revelation anticipee demande 100% des joueurs actifs.
-`voteNextRound` sert au passage manuel vers la manche suivante apres revelation et demande 50% des joueurs actifs. Il refuse d'avancer tant qu'un verrou de suggestion actif existe.
-`holdSuggestion` et `releaseSuggestionHold` posent/retirent un verrou temporaire de manche pendant qu'un joueur propose une correction depuis l'ecran de jeu.
-`submitSuggestion` accepte une correction de piste (`track_correction`, authentifie depuis une partie) ou une nouvelle musique (`new_track`, possible depuis la page publique sans session). Une URL YouTube fournie doit etre normalisable en ID video. Anti-abus: 5 suggestions maximum par 10 minutes et par utilisateur authentifie ou IP anonyme.
-`getRoundState` renvoie `round.preload_seconds`, `round.is_waiting_to_start`, `round.starts_in_seconds`, `next_round_number`, `next_track`, `upcoming_tracks`, `early_reveal_votes`, `suggestion_holds`, `solved_players` et `answer_attempts` pour l'interface de jeu. Avant revelation globale, `round.track` ne contient que les donnees necessaires a la lecture (`youtube_video_id`, `start_offset_seconds`) et, si l'option du salon l'autorise, la categorie. Les champs solution (`title`, `artist`, `family_name`, alias, etc.) sont renvoyes au joueur qui a trouve et a tout le monde apres revelation. `next_track` et `upcoming_tracks` restent toujours expurges des champs solution. Les joueurs ne recoivent pas l'historique complet des tentatives: `answer_attempts` expose seulement les derniers essais rates visibles. L'historique complet reste en base dans `mq_round_answer_attempts` pour de futures statistiques/admin.
-`submitAnswer` utilise `answer_similarity_threshold`: `100` impose la correspondance normalisee exacte; en dessous, le backend calcule une similarite hybride (Levenshtein, similar_text, Jaro-Winkler) avec garde-fous sur les reponses courtes.
-`linkTvPairing` lie un code TV en attente au salon de l'utilisateur connecte; l'utilisateur doit deja etre membre du salon.
+Details importants:
 
-Mode TV public:
+- `createLobby` accepte `game_mode`, `visibility`, `total_rounds`, `round_duration_seconds`, `reveal_duration_seconds`, `selected_category_ids`, `show_track_category`, `allow_early_reveal_vote`, `answer_similarity_threshold`.
+- `createLobby` active `show_track_category` par defaut si absent.
+- `createLobby` utilise `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, `80` par defaut.
+- `updateLobbyConfig` accepte les memes options de reglage.
+- `listPublicLobbies` filtre par `game_mode`; `participative` est le defaut.
+- `touchLobby` accepte `presence_status` (`active`, `away`) et, pour le createur, `target_user_id`.
+- `kickPlayer` retire un joueur du salon sans detruire son historique de score.
+- `voteRevealRound` demande 100% des joueurs actifs, refuse si l'option est desactivee, si quelqu'un a deja trouve, ou si la reponse est deja revelee.
+- `voteNextRound` demande 50% des joueurs actifs apres revelation et refuse tant qu'un verrou de suggestion est actif.
+- `holdSuggestion` bloque temporairement le passage a la manche suivante pendant qu'un joueur propose une correction.
+- `submitSuggestion` accepte `track_correction` authentifie depuis une partie et `new_track` depuis la page publique.
+- `submitSuggestion` limite l'abus a 5 suggestions par 10 minutes et par utilisateur/IP.
+- `submitAnswer` utilise `answer_similarity_threshold` avec similarite hybride et garde-fous sur reponses courtes.
 
-- `POST action=createTvPairing`: cree un code court et un `device_token` pour l'ecran TV
-- `GET action=getTvPairing&device_token=...`: permet a la TV de savoir si son code est encore en attente ou lie
-- `GET action=getTvState&device_token=...`: renvoie un snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur.
+## Round state
 
-Il n'existe plus d'action `markTvRoundReady`. Le frontend TV ne signale plus au backend qu'une video est prete; les manches demarrent selon `MQ_ROUND_PRELOAD_SECONDS`.
+`getRoundState` renvoie notamment:
 
-## Authentification et permissions
+- `round.preload_seconds`
+- `round.is_waiting_to_start`
+- `round.starts_in_seconds`
+- `next_round_number`
+- `next_track`
+- `upcoming_tracks`
+- `early_reveal_votes`
+- `suggestion_holds`
+- `solved_players`
+- `answer_attempts`
 
-- Les endpoints authentifies valident le cookie session `sid` via `AuthMiddleware`.
-- `AuthMiddleware` lit `auth_sessions` et `users` dans le schema `ShinedeCore`.
-- L'API charge le runtime `.env` de `P:\PROD\API\auth` via l'autoload Auth si disponible, pour partager la config DB/Mercure.
-- Les permissions admin catalogue passent par `Module-ShinedeCore-PHP`, deploye en PROD sous `P:\PROD\API\core`.
-- Permission stable: `melodyquest.catalog.manage`.
-- `core.super_admin` donne le bypass global; `users.role='admin'` reste seulement un fallback de transition.
+Avant revelation globale:
 
-Le code doit verifier les permissions avec:
+- `round.track` contient les donnees necessaires a la lecture: `youtube_video_id`, `start_offset_seconds`;
+- la categorie peut etre incluse si le salon l'autorise;
+- les champs solution sont exposes au joueur qui a trouve, puis a tout le monde apres revelation.
 
-```php
-hasPermission($userId, 'melodyquest', 'catalog.manage')
-```
+`next_track` et `upcoming_tracks` restent expurges des champs solution.
 
-Ne pas ajouter de logique metier basee sur le libelle d'un role configurable.
+Les joueurs ne recoivent pas l'historique complet des tentatives. `answer_attempts` expose seulement les derniers essais rates visibles. L'historique complet reste en DB pour admin/statistiques.
 
-Flux temps reel:
+## Mode TV public
 
-- priorite: hub Mercure `https://mercure.shinederu.ch/.well-known/mercure`
-- resynchronisation possible par API HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`)
-- pas de fallback SSE supporte dans l'API actuelle
+- `POST action=createTvPairing`: cree un code court et un `device_token`.
+- `GET action=getTvPairing&device_token=...`: statut du code TV.
+- `GET action=getTvState&device_token=...`: snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur.
 
-Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin global):
+Il n'existe plus d'action `markTvRoundReady`.
+
+## Actions admin catalogue
+
+Reservees a `melodyquest.catalog.manage`, `core.super_admin` ou au fallback historique `users.role='admin'`.
 
 - `POST action=createCategory`
 - `POST action=createFamily`
@@ -207,75 +280,107 @@ Admin uniquement (droit central `melodyquest.catalog.manage` ou super-admin glob
 - `POST action=validateTrack`
 - `POST action=unvalidateTrack`
 - `GET action=listSuggestions&status=pending|reviewed|rejected|all`
-- `GET action=listAnswerAttempts&outcome=wrong|correct|scored|all&search=...`
 - `POST action=updateSuggestion`
 - `POST action=applySuggestion`
 - `POST action=updateSuggestionStatus`
+- `GET action=listAnswerAttempts&outcome=wrong|correct|scored|all&search=...`
 - `DELETE action=deleteCategory`
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`
 
-`validateTrack` accepte au minimum `track_id` ou `id`. Il peut aussi recevoir les champs de correction `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url` ou `start_offset_seconds`; dans ce cas l'API applique ces corrections puis valide la musique dans une meme transaction. Quand `aliases` est fourni, la liste remplace les alias acceptes de l'oeuvre cible via `mq_family_aliases`.
-`updateSuggestion` enregistre les champs editable d'une suggestion joueur sans modifier le catalogue.
-`applySuggestion` applique une suggestion au catalogue: une correction met a jour/valide la musique liee et ajoute l'alias propose sans perdre les alias existants; une nouvelle musique cree une piste validee dans la categorie/oeuvre choisie par l'admin. La suggestion est ensuite marquee `reviewed` avec `applied_track_id` et `applied_at`.
-`listAnswerAttempts` expose les groupes de reponses et les essais recents issus de `mq_round_answer_attempts` pour aider l'admin a reperer des alias, corrections ou idees de musiques.
+Details:
+
+- `validateTrack` peut recevoir `track_id`, `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url`, `start_offset_seconds`.
+- Si `aliases` est fourni a `validateTrack`, la liste remplace les alias de l'oeuvre cible.
+- `updateSuggestion` enregistre les champs editables d'une suggestion sans modifier le catalogue.
+- `applySuggestion` applique une correction ou cree une nouvelle piste validee, puis marque la suggestion `reviewed`.
+- `updateSuggestionStatus` passe une suggestion en `pending`, `reviewed` ou `rejected`.
+- `listAnswerAttempts` expose des groupes de reponses et essais recents pour aider a reperer alias/corrections/idees.
+
+## Authentification et permissions
+
+- Session via cookie `sid`.
+- Tables Auth: `auth_sessions`, `users`.
+- Config Auth partagee via runtime `P:\PROD\API\auth` quand disponible.
+- Permissions via `Module-ShinedeCore-PHP`, deploye sous `P:\PROD\API\core`.
+- Permission stable:
+
+```text
+melodyquest.catalog.manage
+```
+
+Code attendu:
+
+```php
+hasPermission($userId, 'melodyquest', 'catalog.manage')
+```
+
+Ne pas ajouter de logique metier basee sur le libelle d'un role configurable.
 
 ## Configuration
 
-Le backend MelodyQuest charge le meme runtime `.env` que `auth`.
+Le backend charge la config DB via variables `MQ_DB_*` en priorite, puis `DB_*`.
 
-- Utilise prioritairement `MQ_DB_*` si presents
-- Sinon fallback sur `DB_*`
-- Pour le temps reel Mercure, le runtime PHP doit aussi connaitre:
-  - `MERCURE_HUB_URL`
-  - `MERCURE_PUBLISH_URL` (optionnel, recommande en interne Docker)
-  - `MERCURE_PUBLISHER_JWT_KEY`
-  - `MERCURE_SUBSCRIBER_JWT_KEY`
-- `MQ_OWNER_STALE_TIMEOUT_SECONDS` permet d'ajuster le delai de nettoyage des salons dont le createur n'envoie plus de presence; valeur par defaut: `300`.
-- `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS` est une ancienne variable conservee pour compatibilite runtime, mais la detection automatique d'inactivite joueur est desactivee. La presence de partie est geree manuellement via `active`/`away`.
-- `MQ_AUTH_BASE_API` permet de definir la base de l'API Auth utilisee pour reconstruire les URLs d'avatar; fallback sur `BASE_API`, puis `https://api.shinederu.ch/auth/`.
-- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD` permet de definir le seuil par defaut des nouveaux salons; valeur par defaut: `80`.
-- `MQ_AWAY_BONUS_PERCENT` definit le pourcentage du score du premier joueur qui trouve attribue aux joueurs absents; valeur par defaut: `10`.
-- `MQ_ROUND_PRELOAD_SECONDS` permet de definir la courte marge de synchronisation au depart des nouvelles manches; valeur par defaut: `3`, bornee entre `0` et `10`.
-- `MQ_TV_PRELOAD_LOOKAHEAD` definit combien de pistes a venir l'API peut garder dans la file de prochaines manches; valeur par defaut: `3`, bornee entre `1` et `5`. Le nom est historique: le frontend TV actuel ne pilote pas de lecteur d'avance.
-- `MQ_MERCURE_TOPIC_BASE` (optionnel)
+Variables:
 
-`P:\DEV\GitHub\App-MelodyQuest-API\.env.example` reste un exemple local versionne. Il ne doit pas etre copie en PROD.
+- `MQ_DB_TYPE` ou `DB_TYPE`
+- `MQ_DB_HOST` ou `DB_HOST`
+- `MQ_DB_NAME` ou `DB_NAME`
+- `MQ_DB_USER` ou `DB_USER`
+- `MQ_DB_PASS` ou `DB_PASS`
+- `MQ_DB_PORT` ou `DB_PORT`
+- `MERCURE_HUB_URL`
+- `MERCURE_PUBLISH_URL`
+- `MERCURE_PUBLISHER_JWT_KEY`
+- `MERCURE_SUBSCRIBER_JWT_KEY`
+- `MQ_OWNER_STALE_TIMEOUT_SECONDS`, defaut `300`
+- `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS`, conserve pour compatibilite mais detection automatique inactive
+- `MQ_AUTH_BASE_API`, fallback `BASE_API`, puis `https://api.shinederu.ch/auth/`
+- `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, defaut `80`
+- `MQ_AWAY_BONUS_PERCENT`, defaut `10`
+- `MQ_ROUND_PRELOAD_SECONDS`, defaut `3`, borne `0` a `10`
+- `MQ_TV_PRELOAD_LOOKAHEAD`, defaut `3`, borne `1` a `5`
+- `MQ_MERCURE_TOPIC_BASE`, optionnel
+
+`.env.example` est un exemple local versionne. Ne pas le copier en PROD.
 
 ## Mercure
 
-- Hub vise: `https://mercure.shinederu.ch/.well-known/mercure`
-- Publish interne recommande cote PHP: `http://mercure/.well-known/mercure`
+- Hub public: `https://mercure.shinederu.ch/.well-known/mercure`
+- Publish interne recommande: `http://mercure/.well-known/mercure`
 - Topic lobbies publics: `https://api.shinederu.ch/melodyquest/topics/public-lobbies`
 - Topic lobby prive: `https://api.shinederu.ch/melodyquest/topics/lobbies/{LOBBY_CODE}`
-- Les reponses `listPublicLobbies` et `getLobbyByCode` exposent un bloc `data.realtime`
-- Le frontend tente Mercure d'abord, puis resynchronise par HTTP si la connexion temps reel est indisponible
 
-Les topics doivent pouvoir etre resynchronises par API HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`). Mercure ne sert pas a executer des commandes critiques.
+Les reponses `listPublicLobbies` et `getLobbyByCode` exposent `data.realtime`.
+
+Mercure sert a publier des evenements/snapshots. Les commandes critiques passent par HTTP.
+
+Chaque etat temps reel doit pouvoir etre reconstruit via HTTP:
+
+- `listPublicLobbies`
+- `getLobbyByCode`
+- `getRoundState`
+- `getTvState`
+
+Il n'y a pas de fallback SSE supporte dans l'API actuelle.
 
 ## Dossiers runtime et fichiers partages
 
-- `P:\PROD\API\melodyquest` contient uniquement le runtime API PHP liste dans la section deploiement.
-- Aucun stockage persistant fichier n'est possede par MelodyQuest actuellement.
-- Le catalogue, les lobbies, les scores, les suggestions et les liaisons TV vivent en DB dans les tables `mq_*`.
-- Les logs applicatifs passent par `error_log` PHP; ne jamais logger de secret, mot de passe, token ou JWT complet.
+- `P:\PROD\API\melodyquest` contient uniquement le runtime PHP.
+- Aucun stockage fichier persistant n'est possede par MelodyQuest.
+- Catalogue, lobbies, scores, suggestions, tentatives et liaisons TV vivent en DB.
+- Logs applicatifs via `error_log` PHP.
+- Ne jamais logger de secret, mot de passe, token ou JWT complet.
 
 ## Dependances inter-projets
 
-- `Module-Auth-API` (`https://api.shinederu.ch/auth/`): sessions `sid`, utilisateurs, avatars.
-- `Module-ShinedeCore-PHP` (`P:\PROD\API\core`): permissions `core_*`.
-- `App-MelodyQuest`: client navigateur consommateur de cette API.
-- Mercure: publication de snapshots lobbies publics/prives.
-- MySQL `ShinedeCore`: tables `users`, `auth_sessions`, `core_*`, `mq_*`.
+- `Module-Auth-API`: sessions, utilisateurs, avatars.
+- `Module-ShinedeCore-PHP`: permissions `core_*`.
+- `App-MelodyQuest`: frontend navigateur.
+- Mercure: snapshots.
+- MySQL `ShinedeCore`: `users`, `auth_sessions`, `core_*`, `mq_*`.
 
-Une integration avec un autre projet doit passer par l'API HTTP proprietaire du projet cible, pas par ecriture directe dans ses tables.
-
-## Regle admin
-
-Le statut admin n'est pas expose au frontend pour elevation.
-Les droits catalogue sont portes par les tables `core_*`.
-Le role seed par defaut est `melodyquest.catalog_admin`; il donne la permission backend `catalog.manage`, souvent notee `melodyquest.catalog.manage` dans la documentation.
-Pendant la transition, `users.role='admin'` reste un fallback super-admin global.
+Une integration avec un autre projet doit passer par l'API proprietaire du projet cible, pas par ecriture directe dans ses tables.
 
 ## Verifications
 
@@ -289,7 +394,7 @@ Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
 
 ## Deploiement
 
-Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.env`, logs, caches runtime). MelodyQuest utilise actuellement la config Auth partagee; ne pas creer de secret dans le repo.
+Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.env`, logs, caches runtime).
 
 Copie runtime type:
 
@@ -298,30 +403,21 @@ $src = 'P:\DEV\GitHub\App-MelodyQuest-API'
 $dst = 'P:\PROD\API\melodyquest'
 Copy-Item "$src\index.php" "$dst\index.php" -Force
 foreach ($dir in @('config','controllers','middlewares','services','utils')) {
-  Copy-Item "$src\$dir\*" "$dst\$dir" -Recurse -Force
+  robocopy "$src\$dir" "$dst\$dir" /E /NFL /NDL /NJH /NJS /NP
 }
 ```
 
-Nettoyer les restes non-runtime si presents en PROD:
+Verifier les restes non-runtime en PROD:
 
 ```powershell
-$nonRuntime = @(
-  'P:\PROD\API\melodyquest\README.md',
-  'P:\PROD\API\melodyquest\AGENTS.md',
-  'P:\PROD\API\melodyquest\PROD_TEST_CHECKLIST.md',
-  'P:\PROD\API\melodyquest\.env.example',
-  'P:\PROD\API\melodyquest\sql',
-  'P:\PROD\API\melodyquest\scripts'
-)
-Remove-Item -LiteralPath $nonRuntime -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem P:\PROD\API\melodyquest -Force |
+  Where-Object { $_.Name -in @('README.md','AGENTS.md','PROD_TEST_CHECKLIST.md','.env.example','sql','scripts','.git','.github') }
 ```
 
 ## Notes de reprise
 
-- Projet mis en pause le 2026-06-12 avec TV revenue au lecteur YouTube simple.
 - Ne pas restaurer `markTvRoundReady` ou le double lecteur TV sans nouvelle analyse.
-- YouTube reste la source principale; l'hebergement local d'audio a ete refuse.
-- Les migrations SQL restent dans le repo DEV et doivent etre appliquees explicitement si un schema neuf est prepare.
-
-
-
+- YouTube reste la source principale; l'hebergement local audio a ete refuse.
+- Les migrations SQL doivent etre appliquees explicitement si un schema neuf est prepare.
+- Les donnees historiques de tentatives/reponses sont utiles pour statistiques et amelioration catalogue.
+- Si une modification touche le player ou la TV, tester un vrai salon avec telephone/PC/TV avant de conclure.
