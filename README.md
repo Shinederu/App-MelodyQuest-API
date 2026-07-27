@@ -153,6 +153,27 @@ php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --fil
 php P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_blindtest_catalog.php --file="P:\DEV\Temp\blindtest with cat.csv" --created-by=1
 ```
 
+## Import catalogue JSON
+
+Les lots JSON structures utilisent:
+
+```text
+P:\DEV\GitHub\App-MelodyQuest-API\scripts\import_catalog_expansion.php
+```
+
+Commandes utiles:
+
+```powershell
+php scripts\import_catalog_expansion.php --file=scripts\catalog\<lot>.json --env-dir=P:\PROD\API\auth --db-host=192.168.10.10 --dry-run
+php scripts\import_catalog_expansion.php --file=scripts\catalog\<lot>.json --env-dir=P:\PROD\API\auth --db-host=192.168.10.10
+php scripts\export_catalog.php --output=P:\DEV\Temp\melodyquest-catalog.json --env-dir=P:\PROD\API\auth --db-host=192.168.10.10
+```
+
+Le lot `2026-07-27_catalog_expansion.json` ajoute 250 pistes dans chacune
+des sept categories standard et 40 pistes de YouTubeurs francais. Les pistes
+sont importees actives et validees; l'import est transactionnel et refuse les
+identifiants YouTube deja presents.
+
 ## API HTTP
 
 Base production:

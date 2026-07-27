@@ -909,9 +909,14 @@ final class BlindtestCatalogImporter
 
     private function slugify(string $value): string
     {
+        $originalValue = trim($value);
         $normalized = strtolower($this->toAscii($value));
         $normalized = preg_replace('/[^a-z0-9]+/', '-', $normalized) ?? '';
-        return trim($normalized, '-');
+        $slug = trim($normalized, '-');
+        if ($slug === '' && $originalValue !== '') {
+            return 'u-' . substr(sha1($originalValue), 0, 20);
+        }
+        return $slug;
     }
 
     private function toAscii(string $value): string

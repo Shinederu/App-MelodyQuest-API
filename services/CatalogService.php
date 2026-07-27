@@ -1008,9 +1008,14 @@ class CatalogService
 
     private function slugify(string $value): string
     {
+        $originalValue = trim($value);
         $value = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
         $value = strtolower((string)$value);
         $value = preg_replace('/[^a-z0-9]+/', '-', $value) ?? '';
-        return trim($value, '-');
+        $slug = trim($value, '-');
+        if ($slug === '' && $originalValue !== '') {
+            return 'u-' . substr(sha1($originalValue), 0, 20);
+        }
+        return $slug;
     }
 }
