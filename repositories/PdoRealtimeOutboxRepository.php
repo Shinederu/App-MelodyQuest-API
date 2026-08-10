@@ -40,8 +40,8 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
                 payload = VALUES(payload),
                 generation = generation + 1,
                 attempts = 0,
-                requested_at = UTC_TIMESTAMP(6),
-                available_at = UTC_TIMESTAMP(6),
+                requested_at = CURRENT_TIMESTAMP(6),
+                available_at = CURRENT_TIMESTAMP(6),
                 last_error = NULL'
         );
         $stmt->bindValue(':stream_key', $streamKey);
@@ -59,7 +59,7 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
             'UPDATE mq_realtime_outbox
              SET locked_at = NULL
              WHERE locked_at IS NOT NULL
-               AND locked_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL ' . $lockTimeoutSeconds . ' SECOND)'
+               AND locked_at < DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL ' . $lockTimeoutSeconds . ' SECOND)'
         );
 
         $this->db->beginTransaction();
@@ -67,7 +67,7 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
             $stmt = $this->db->query(
                 'SELECT *
                  FROM mq_realtime_outbox
-                 WHERE available_at <= UTC_TIMESTAMP(6)
+                 WHERE available_at <= CURRENT_TIMESTAMP(6)
                    AND locked_at IS NULL
                  ORDER BY available_at ASC, id ASC
                  LIMIT 1
@@ -81,7 +81,7 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
 
             $claim = $this->db->prepare(
                 'UPDATE mq_realtime_outbox
-                 SET locked_at = UTC_TIMESTAMP(6), attempts = attempts + 1
+                 SET locked_at = CURRENT_TIMESTAMP(6), attempts = attempts + 1
                  WHERE id = :id AND generation = :generation'
             );
             $claim->execute([
@@ -111,7 +111,7 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
         if ($delete->rowCount() === 0) {
             $release = $this->db->prepare(
                 'UPDATE mq_realtime_outbox
-                 SET locked_at = NULL, available_at = UTC_TIMESTAMP(6), last_error = NULL
+                 SET locked_at = NULL, available_at = CURRENT_TIMESTAMP(6), last_error = NULL
                  WHERE id = :id'
             );
             $release->execute(['id' => $id]);
@@ -127,7 +127,7 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
         $retry = $this->db->prepare(
             'UPDATE mq_realtime_outbox
              SET locked_at = NULL,
-                 available_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ' . $delayMicroseconds . ' MICROSECOND),
+                 available_at = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL ' . $delayMicroseconds . ' MICROSECOND),
                  last_error = :last_error
              WHERE id = :id AND generation = :generation'
         );
@@ -140,7 +140,7 @@ class PdoRealtimeOutboxRepository implements RealtimeOutboxRepository
         if ($retry->rowCount() === 0) {
             $release = $this->db->prepare(
                 'UPDATE mq_realtime_outbox
-                 SET locked_at = NULL, available_at = UTC_TIMESTAMP(6), last_error = NULL
+                 SET locked_at = NULL, available_at = CURRENT_TIMESTAMP(6), last_error = NULL
                  WHERE id = :id'
             );
             $release->execute(['id' => $id]);

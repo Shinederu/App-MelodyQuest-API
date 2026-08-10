@@ -215,6 +215,7 @@ $controllerSource = file_get_contents(__DIR__ . '/../controllers/LobbyController
 $responseSource = file_get_contents(__DIR__ . '/../utils/response.php');
 $afterResponseSource = file_get_contents(__DIR__ . '/../utils/after_response.php');
 $migrationSource = file_get_contents(__DIR__ . '/../sql/019_melodyquest_realtime_outbox.sql');
+$pdoRepositorySource = file_get_contents(__DIR__ . '/../repositories/PdoRealtimeOutboxRepository.php');
 
 mqTest('Le controleur HTTP ne publie plus directement vers Mercure', function () use ($controllerSource): void {
     mqAssertFalse(str_contains($controllerSource, '->publish('));
@@ -240,4 +241,9 @@ mqTest('La migration outbox est non destructive et regroupe les flux', function 
     mqAssertFalse(str_contains($upper, 'DELETE FROM'));
     mqAssertTrue(str_contains($migrationSource, 'mq_realtime_outbox'));
     mqAssertTrue(str_contains($migrationSource, 'UNIQUE KEY uq_mq_realtime_outbox_stream'));
+});
+
+mqTest('La file utilise la meme horloge MySQL que ses colonnes par defaut', function () use ($pdoRepositorySource): void {
+    mqAssertFalse(str_contains($pdoRepositorySource, 'UTC_TIMESTAMP'));
+    mqAssertTrue(str_contains($pdoRepositorySource, 'CURRENT_TIMESTAMP(6)'));
 });
