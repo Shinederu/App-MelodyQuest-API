@@ -1,20 +1,24 @@
 <?php
 
 require_once __DIR__ . '/DatabaseService.php';
+require_once __DIR__ . '/GameSessionService.php';
 require_once __DIR__ . '/../config/config.php';
+require_once __DIR__ . '/../repositories/PdoGameSessionRepository.php';
 require_once __DIR__ . '/../utils/youtube.php';
 
 class LobbyService
 {
     private PDO $db;
+    private GameSessionService $gameSessions;
     private ?bool $familyAliasesTableExists = null;
     private ?bool $youtubeUrlColumnExists = null;
     private static ?bool $familyAliasesTableExistsCache = null;
     private static ?bool $youtubeUrlColumnExistsCache = null;
 
-    public function __construct()
+    public function __construct(?PDO $db = null)
     {
-        $this->db = DatabaseService::getInstance();
+        $this->db = $db ?? DatabaseService::getInstance();
+        $this->gameSessions = new GameSessionService(new PdoGameSessionRepository($this->db));
     }
 
     public function createLobby(int $ownerUserId, array $payload): array
@@ -196,6 +200,10 @@ class LobbyService
                 );
                 $role->execute(['owner' => $newOwner, 'lobby_id' => $lobbyId]);
             } else {
+                $this->gameSessions->archiveLobbyGame(
+                    $lobbyId,
+                    strtolower((string)$lobby['status']) === 'finished' ? 'finished' : 'cancelled'
+                );
                 $close = $this->db->prepare('UPDATE mq_lobbies SET status = "closed" WHERE id = :id');
                 $close->execute(['id' => $lobbyId]);
             }
@@ -281,8 +289,22 @@ class LobbyService
         $lobby = $this->requireLobby($lobbyId);
         $this->requireOwner($lobby, $ownerUserId);
 
-        $stmt = $this->db->prepare('DELETE FROM mq_lobbies WHERE id = :id');
-        $stmt->execute(['id' => $lobbyId]);
+        $this->db->beginTransaction();
+        try {
+            $this->gameSessions->archiveLobbyGame(
+                $lobbyId,
+                strtolower((string)($lobby['status'] ?? '')) === 'finished' ? 'finished' : 'cancelled'
+            );
+
+            $stmt = $this->db->prepare('DELETE FROM mq_lobbies WHERE id = :id');
+            $stmt->execute(['id' => $lobbyId]);
+            $this->db->commit();
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
 
         return [
             'ok' => true,
@@ -316,6 +338,8 @@ class LobbyService
 
                 throw new RuntimeException('Le lobby n\'est pas dans un état relançable');
             }
+
+            $this->gameSessions->archiveLobbyGame($lobbyId, 'finished');
 
             $this->db->prepare(
                 'DELETE a
@@ -1371,7 +1395,7 @@ class LobbyService
 
         $timeout = max(1, (int)MQ_OWNER_STALE_TIMEOUT_SECONDS);
         $stmt = $this->db->prepare(
-            'SELECT l.id
+            'SELECT l.id, l.status
              FROM mq_lobbies l
              JOIN mq_lobby_players lp
                ON lp.lobby_id = l.id
@@ -1381,18 +1405,35 @@ class LobbyService
                AND lp.last_seen_at < (NOW() - INTERVAL ' . $timeout . ' SECOND)'
         );
         $stmt->execute();
-        $lobbyIds = array_map('intval', array_column($stmt->fetchAll(), 'id'));
+        $staleLobbies = $stmt->fetchAll();
 
-        if (empty($lobbyIds)) {
+        if (empty($staleLobbies)) {
             return;
         }
 
+        $lobbyIds = array_map('intval', array_column($staleLobbies, 'id'));
         $placeholders = implode(',', array_fill(0, count($lobbyIds), '?'));
-        $delete = $this->db->prepare('DELETE FROM mq_lobbies WHERE id IN (' . $placeholders . ')');
-        foreach ($lobbyIds as $index => $lobbyId) {
-            $delete->bindValue($index + 1, $lobbyId, PDO::PARAM_INT);
+        $this->db->beginTransaction();
+        try {
+            foreach ($staleLobbies as $staleLobby) {
+                $this->gameSessions->archiveLobbyGame(
+                    (int)$staleLobby['id'],
+                    strtolower((string)$staleLobby['status']) === 'finished' ? 'finished' : 'cancelled'
+                );
+            }
+
+            $delete = $this->db->prepare('DELETE FROM mq_lobbies WHERE id IN (' . $placeholders . ')');
+            foreach ($lobbyIds as $index => $lobbyId) {
+                $delete->bindValue($index + 1, $lobbyId, PDO::PARAM_INT);
+            }
+            $delete->execute();
+            $this->db->commit();
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
         }
-        $delete->execute();
     }
 
     private function shouldRunStaleOwnerCleanup(): bool

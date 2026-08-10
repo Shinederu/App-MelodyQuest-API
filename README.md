@@ -35,6 +35,7 @@ Fichiers/dossiers runtime autorises en PROD:
 - `config\`
 - `controllers\`
 - `middlewares\`
+- `repositories\`
 - `services\`
 - `utils\`
 
@@ -88,10 +89,12 @@ Ne pas deployer en PROD:
 - `config\`: configuration runtime non secrete et constantes.
 - `controllers\`: validation payload et reponses HTTP.
 - `middlewares\`: session auth et permissions.
+- `repositories\`: persistance specialisee et testable, notamment l'historique de parties.
 - `services\`: logique metier, DB, selection, Mercure, suggestions.
 - `utils\`: helpers request/response/YouTube.
 - `sql\`: migrations source.
-- `scripts\`: outils CLI source, notamment import catalogue.
+- `scripts\`: outils CLI source, notamment imports catalogue et backfill d'historique.
+- `tests\`: tests PHP sans dependance externe.
 
 Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infrastructure`.
 
@@ -120,6 +123,7 @@ Migrations:
 - `015_melodyquest_autoplay_mode.sql`: `mq_lobbies.game_mode`.
 - `016_melodyquest_category_visible_default.sql`: categorie visible par defaut.
 - `017_melodyquest_admin_suggestion_review.sql`: champs de revue/application admin des suggestions.
+- `018_melodyquest_game_history.sql`: sessions de jeu et snapshots append-only.
 
 Regles DB:
 
@@ -127,6 +131,29 @@ Regles DB:
 - Les migrations doivent etre idempotentes quand c'est possible.
 - Ne jamais supprimer de donnees sans demande explicite.
 - Les anciennes donnees de tentatives/reponses sont conservees pour statistiques et analyse admin.
+- L'historique `mq_game_session_*` ne reference pas les tables live: les noms, pistes, categories et utilisateurs utiles sont snapshots.
+
+### Historique des parties
+
+Une session est archivee avant toute remise a zero, suppression explicite, fermeture du dernier joueur ou purge d'un salon inactif. L'archive et l'operation destructive partagent une transaction; une erreur d'archive bloque donc la suppression.
+
+Tables:
+
+- `mq_game_sessions`: salon, proprietaire, mode, configuration et dates;
+- `mq_game_session_players`: participants, role, presence et score final;
+- `mq_game_session_rounds`: piste et libelles figes par manche;
+- `mq_game_session_answers` et `mq_game_session_answer_attempts`;
+- `mq_game_session_reveal_votes` et `mq_game_session_away_bonuses`.
+
+Le repository complete les anciens participants manquants a partir des activites disponibles, avec `INSERT IGNORE`: aucune ligne d'historique existante n'est ecrasee.
+
+Backfill idempotent des salons deja termines ou fermes:
+
+```powershell
+php P:\DEV\GitHub\App-MelodyQuest-API\scripts\backfill_game_history.php --env-dir=P:\PROD\API\auth --db-host=192.168.10.10
+```
+
+La migration `018` doit etre appliquee auparavant avec un compte autorise a creer des tables. Le script utilise ensuite le compte applicatif et ne modifie ni ne supprime les donnees sources.
 
 ## Import catalogue CSV
 
@@ -407,6 +434,7 @@ Une integration avec un autre projet doit passer par l'API proprietaire du proje
 
 ```powershell
 Get-ChildItem P:\DEV\GitHub\App-MelodyQuest-API -Recurse -Filter *.php | % { php -l $_.FullName }
+php P:\DEV\GitHub\App-MelodyQuest-API\tests\run.php
 git -c safe.directory=* diff --check
 rg -n "password|passwd|secret|BEGIN (RSA|OPENSSH|PRIVATE)|api_key" P:\DEV\GitHub\App-MelodyQuest-API
 ```
@@ -423,7 +451,7 @@ Copie runtime type:
 $src = 'P:\DEV\GitHub\App-MelodyQuest-API'
 $dst = 'P:\PROD\API\melodyquest'
 Copy-Item "$src\index.php" "$dst\index.php" -Force
-foreach ($dir in @('config','controllers','middlewares','services','utils')) {
+foreach ($dir in @('config','controllers','middlewares','repositories','services','utils')) {
   robocopy "$src\$dir" "$dst\$dir" /E /NFL /NDL /NJH /NJS /NP
 }
 ```

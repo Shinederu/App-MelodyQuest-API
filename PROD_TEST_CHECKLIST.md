@@ -3,9 +3,9 @@
 ## Prerequis
 
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
-- API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `config\`, `controllers\`, `middlewares\`, `services\`, `utils\`.
+- API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/017_melodyquest_admin_suggestion_review.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/018_melodyquest_game_history.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -13,9 +13,11 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260619-autoplay-return-lobby`.
+- Cache-bust frontend attendu: `20260810-history-safety`.
 - Mode actif: reponses, score, classement, votes.
 - Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes.
+- Les suppressions de catalogue et de salon demandent une confirmation nommee.
+- Une partie est archivee dans `mq_game_session_*` avant reset, suppression, fermeture ou purge.
 - Fin du mode passif: retour automatique au lobby.
 - L'action `markTvRoundReady` n'existe plus et doit etre refusee.
 - Le mode TV utilise un lecteur YouTube simple; aucun conteneur de double lecteur/preload TV ne doit etre requis.
@@ -125,4 +127,6 @@ Avec un compte admin catalogue:
 - Les suggestions bloquent bien le passage quand un hold est actif.
 - Les salons actifs/passifs restent separes dans les listes.
 - La TV ne bloque pas le demarrage des manches.
+- Chaque session archivee possede au moins un participant et aucun enfant orphelin.
+- Une seconde execution du backfill ne cree aucune session supplementaire.
 - Aucune doc interne ou secret n'est present dans les dossiers PROD.

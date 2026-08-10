@@ -29,10 +29,12 @@ Ce depot contient le backend PHP de MelodyQuest. Il doit rester deployable dans 
 - `config\`: constantes runtime non secretes et lecture env.
 - `controllers\`: validation payload et reponses.
 - `middlewares\`: auth session et permissions.
+- `repositories\`: persistance specialisee, notamment snapshots de parties.
 - `services\`: logique metier, DB, Mercure, suggestions, TV.
 - `utils\`: helpers request/response/YouTube.
 - `sql\`: migrations source, a ne pas deployer en runtime public.
 - `scripts\`: outils CLI source, a ne pas deployer en runtime public.
+- `tests\`: suite PHP locale, a ne pas deployer.
 
 Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infrastructure`.
 
@@ -45,6 +47,8 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Les joueurs absents ne bloquent pas les votes/transitions et recoivent un bonus selon config.
 - Le createur peut exclure un joueur sans detruire son historique de score.
 - Les tentatives de reponse restent en DB pour admin/statistiques.
+- Toute partie avec au moins une manche est copiee dans `mq_game_session_*` avant reset, suppression, fermeture ou purge.
+- Les snapshots de session sont append-only et ne doivent pas recevoir de FK vers les tables live.
 - Les suggestions joueurs peuvent etre editees et appliquees au catalogue.
 - La TV ne signale plus `markTvRoundReady`; ne pas restaurer cette action sans nouvelle analyse.
 - YouTube reste la source principale; ne pas ajouter de stockage audio local.
@@ -73,6 +77,7 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 
 ```powershell
 Get-ChildItem P:\DEV\GitHub\App-MelodyQuest-API -Recurse -Filter *.php | % { php -l $_.FullName }
+php P:\DEV\GitHub\App-MelodyQuest-API\tests\run.php
 git -c safe.directory=* diff --check
 rg -n "password|passwd|secret|BEGIN (RSA|OPENSSH|PRIVATE)|api_key" P:\DEV\GitHub\App-MelodyQuest-API
 ```
@@ -85,6 +90,7 @@ Copier uniquement le runtime necessaire vers `P:\PROD\API\melodyquest`:
 - `config\`
 - `controllers\`
 - `middlewares\`
+- `repositories\`
 - `services\`
 - `utils\`
 
