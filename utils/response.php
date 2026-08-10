@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/after_response.php';
+
 function json_success(?string $message = null, $data = null, int $status = 200): void
 {
     http_response_code($status);
@@ -14,6 +16,7 @@ function json_success(?string $message = null, $data = null, int $status = 200):
     }
 
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    mq_run_after_response_tasks();
     exit;
 }
 
@@ -28,6 +31,7 @@ function json_error(string $message, int $status = 400, $errors = null): void
     }
 
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    mq_run_after_response_tasks();
     exit;
 }
 

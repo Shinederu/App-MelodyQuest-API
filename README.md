@@ -32,6 +32,7 @@ Le dossier PROD ne doit pas etre un clone du repo.
 Fichiers/dossiers runtime autorises en PROD:
 
 - `index.php`
+- `bin\` (worker de reprise temps reel uniquement)
 - `config\`
 - `controllers\`
 - `middlewares\`
@@ -71,6 +72,7 @@ Ne pas deployer en PROD:
 - Les suggestions joueurs peuvent etre editees, refusees, marquees traitees ou appliquees directement au catalogue.
 - Les avatars historiques `action=getAvatar` sont normalises vers l'API Auth active avant retour frontend.
 - Le mode TV frontend utilise un lecteur YouTube simple; l'action experimentale `markTvRoundReady` n'existe plus.
+- Les publications Mercure sont coalescees dans `mq_realtime_outbox` et executees apres la reponse HTTP.
 
 ## Contraintes produit
 
@@ -86,12 +88,13 @@ Ne pas deployer en PROD:
 ## Structure
 
 - `index.php`: routeur par action/methode HTTP.
+- `bin\`: worker CLI runtime de reprise de la file temps reel.
 - `config\`: configuration runtime non secrete et constantes.
 - `controllers\`: validation payload et reponses HTTP.
 - `middlewares\`: session auth et permissions.
-- `repositories\`: persistance specialisee et testable, notamment l'historique de parties.
-- `services\`: logique metier, DB, selection, Mercure, suggestions.
-- `utils\`: helpers request/response/YouTube.
+- `repositories\`: persistance specialisee et testable, notamment historique et outbox temps reel.
+- `services\`: logique metier, DB, selection, Mercure, outbox et suggestions.
+- `utils\`: helpers request/response/YouTube et travaux post-reponse.
 - `sql\`: migrations source.
 - `scripts\`: outils CLI source, notamment imports catalogue et backfill d'historique.
 - `tests\`: tests PHP sans dependance externe.
@@ -124,6 +127,7 @@ Migrations:
 - `016_melodyquest_category_visible_default.sql`: categorie visible par defaut.
 - `017_melodyquest_admin_suggestion_review.sql`: champs de revue/application admin des suggestions.
 - `018_melodyquest_game_history.sql`: sessions de jeu et snapshots append-only.
+- `019_melodyquest_realtime_outbox.sql`: file durable et coalescee des snapshots Mercure.
 
 Regles DB:
 
@@ -389,6 +393,10 @@ Variables:
 - `MQ_ROUND_PRELOAD_SECONDS`, defaut `3`, borne `0` a `10`
 - `MQ_TV_PRELOAD_LOOKAHEAD`, defaut `3`, borne `1` a `5`
 - `MQ_MERCURE_TOPIC_BASE`, optionnel
+- `MQ_MERCURE_PUBLISH_TIMEOUT_SECONDS`, defaut `1`, borne `0.2` a `3`
+- `MQ_REALTIME_OUTBOX_BATCH_SIZE`, defaut `8`, borne `1` a `50`
+- `MQ_REALTIME_OUTBOX_MAX_RUNTIME_MS`, defaut `2000`, borne `100` a `10000`
+- `MQ_REALTIME_OUTBOX_LOCK_TIMEOUT_SECONDS`, defaut `30`, borne `5` a `300`
 
 `.env.example` est un exemple local versionne. Ne pas le copier en PROD.
 
@@ -403,6 +411,27 @@ Les reponses `listPublicLobbies` et `getLobbyByCode` exposent `data.realtime`.
 
 Mercure sert a publier des evenements/snapshots. Les commandes critiques passent par HTTP.
 
+- Le controleur persiste d'abord la commande metier puis marque le flux concerne dans `mq_realtime_outbox`.
+- Une seule ligne est conservee par salon et pour la liste publique; plusieurs commandes rapprochees sont donc regroupees.
+- La reponse JSON est envoyee et fermee avec `fastcgi_finish_request()` avant tout appel au hub.
+- Le worker reconstruit le dernier snapshot depuis la DB, publie, puis acquitte la ligne avec controle de generation.
+- Un echec Mercure conserve la ligne avec backoff; il ne transforme jamais une commande de jeu valide en erreur HTTP.
+- Les clients gardent la resynchronisation HTTP comme source de verite.
+
+En fonctionnement normal, chaque commande ayant marque un flux declenche un court drainage post-reponse. Reprise manuelle ponctuelle:
+
+```powershell
+php P:\PROD\API\melodyquest\bin\process_realtime_outbox.php
+```
+
+Worker continu optionnel si l'infrastructure le supervise:
+
+```powershell
+php P:\PROD\API\melodyquest\bin\process_realtime_outbox.php --loop
+```
+
+Le mode continu n'est pas requis par le runtime FPM actuel; il sert de filet de reprise ou de futur worker dedie.
+
 Chaque etat temps reel doit pouvoir etre reconstruit via HTTP:
 
 - `listPublicLobbies`
@@ -416,7 +445,7 @@ Il n'y a pas de fallback SSE supporte dans l'API actuelle.
 
 - `P:\PROD\API\melodyquest` contient uniquement le runtime PHP.
 - Aucun stockage fichier persistant n'est possede par MelodyQuest.
-- Catalogue, lobbies, scores, suggestions, tentatives et liaisons TV vivent en DB.
+- Catalogue, lobbies, scores, suggestions, tentatives, liaisons TV et outbox temps reel vivent en DB.
 - Logs applicatifs via `error_log` PHP.
 - Ne jamais logger de secret, mot de passe, token ou JWT complet.
 
@@ -451,7 +480,7 @@ Copie runtime type:
 $src = 'P:\DEV\GitHub\App-MelodyQuest-API'
 $dst = 'P:\PROD\API\melodyquest'
 Copy-Item "$src\index.php" "$dst\index.php" -Force
-foreach ($dir in @('config','controllers','middlewares','repositories','services','utils')) {
+foreach ($dir in @('bin','config','controllers','middlewares','repositories','services','utils')) {
   robocopy "$src\$dir" "$dst\$dir" /E /NFL /NDL /NJH /NJS /NP
 }
 ```

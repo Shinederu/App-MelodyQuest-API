@@ -3,9 +3,9 @@
 ## Prerequis
 
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
-- API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
+- API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `bin\`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/018_melodyquest_game_history.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/019_melodyquest_realtime_outbox.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -21,6 +21,7 @@
 - Fin du mode passif: retour automatique au lobby.
 - L'action `markTvRoundReady` n'existe plus et doit etre refusee.
 - Le mode TV utilise un lecteur YouTube simple; aucun conteneur de double lecteur/preload TV ne doit etre requis.
+- Les commandes HTTP alimentent `mq_realtime_outbox`; elles n'attendent plus la publication Mercure.
 
 ## Variables d'environnement
 
@@ -41,6 +42,10 @@ Configurer cote PHP runtime:
 - `MQ_AWAY_BONUS_PERCENT`, optionnel, defaut `10`
 - `MQ_TV_PRELOAD_LOOKAHEAD`, optionnel, defaut `3`
 - `MQ_AUTH_BASE_API`, optionnel
+- `MQ_MERCURE_PUBLISH_TIMEOUT_SECONDS`, optionnel, defaut `1`
+- `MQ_REALTIME_OUTBOX_BATCH_SIZE`, optionnel, defaut `8`
+- `MQ_REALTIME_OUTBOX_MAX_RUNTIME_MS`, optionnel, defaut `2000`
+- `MQ_REALTIME_OUTBOX_LOCK_TIMEOUT_SECONDS`, optionnel, defaut `30`
 
 ## Smoke tests API
 
@@ -115,6 +120,10 @@ Avec un compte admin catalogue:
 2. `GET action=listPublicLobbies` retourne `data.realtime.transport=mercure` si le hub est configure.
 3. Les mises a jour lobby/joueurs apparaissent sans rechargement manuel.
 4. En cas d'indisponibilite Mercure, l'interface se reconstruit par HTTP sans rester bloquee.
+5. Une commande valide reste rapide et retourne `success=true` meme si le hub est momentanement indisponible.
+6. Une publication echouee reste dans `mq_realtime_outbox` avec `attempts` et `last_error`, puis disparait apres reprise.
+7. Plusieurs actions rapprochees sur un meme salon ne creent qu'une ligne `lobby:{id}` avec une generation incrementee.
+8. Le worker de reprise s'execute sans erreur avec `php bin\process_realtime_outbox.php`.
 
 ## Criteres go/no-go
 
@@ -129,4 +138,5 @@ Avec un compte admin catalogue:
 - La TV ne bloque pas le demarrage des manches.
 - Chaque session archivee possede au moins un participant et aucun enfant orphelin.
 - Une seconde execution du backfill ne cree aucune session supplementaire.
+- L'outbox se vide apres publication et aucun verrou ne reste bloque au-dela du timeout configure.
 - Aucune doc interne ou secret n'est present dans les dossiers PROD.

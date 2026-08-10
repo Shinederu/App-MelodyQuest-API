@@ -26,12 +26,13 @@ Ce depot contient le backend PHP de MelodyQuest. Il doit rester deployable dans 
 ## Structure
 
 - `index.php`: routeur API par `action`.
+- `bin\`: worker CLI runtime de reprise de l'outbox Mercure.
 - `config\`: constantes runtime non secretes et lecture env.
 - `controllers\`: validation payload et reponses.
 - `middlewares\`: auth session et permissions.
-- `repositories\`: persistance specialisee, notamment snapshots de parties.
-- `services\`: logique metier, DB, Mercure, suggestions, TV.
-- `utils\`: helpers request/response/YouTube.
+- `repositories\`: persistance specialisee, notamment historique et outbox temps reel.
+- `services\`: logique metier, DB, Mercure, outbox, suggestions et TV.
+- `utils\`: helpers request/response/YouTube et travaux post-reponse.
 - `sql\`: migrations source, a ne pas deployer en runtime public.
 - `scripts\`: outils CLI source, a ne pas deployer en runtime public.
 - `tests\`: suite PHP locale, a ne pas deployer.
@@ -52,6 +53,7 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Les suggestions joueurs peuvent etre editees et appliquees au catalogue.
 - La TV ne signale plus `markTvRoundReady`; ne pas restaurer cette action sans nouvelle analyse.
 - YouTube reste la source principale; ne pas ajouter de stockage audio local.
+- Les commandes HTTP ne publient jamais directement vers Mercure: elles alimentent `mq_realtime_outbox`.
 
 ## Auth, permissions et DB
 
@@ -72,6 +74,10 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
   - `https://api.shinederu.ch/melodyquest/topics/lobbies/{LOBBY_CODE}`
 - Pas de fallback SSE supporte dans l'API actuelle.
 - Toute information temps reel doit pouvoir etre reconstruite via HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`, `getTvState`).
+- La migration `019_melodyquest_realtime_outbox.sql` doit etre appliquee avant de deployer le code d'outbox.
+- Les lignes sont coalescees par flux et acquittees avec leur generation; ne pas remplacer ce mecanisme par un `publish()` synchrone dans un controleur.
+- Le drainage normal commence seulement apres `fastcgi_finish_request()`; un echec du hub ne doit pas faire echouer la commande metier.
+- `bin\process_realtime_outbox.php` est le filet CLI de reprise et peut etre supervise en mode `--loop` si necessaire.
 
 ## Verifications
 
@@ -87,6 +93,7 @@ rg -n "password|passwd|secret|BEGIN (RSA|OPENSSH|PRIVATE)|api_key" P:\DEV\GitHub
 Copier uniquement le runtime necessaire vers `P:\PROD\API\melodyquest`:
 
 - `index.php`
+- `bin\`
 - `config\`
 - `controllers\`
 - `middlewares\`
