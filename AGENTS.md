@@ -2,6 +2,13 @@
 
 Ce depot contient le backend PHP de MelodyQuest. Il doit rester deployable dans `P:\PROD\API\melodyquest` sans copier de fichiers de developpement en production.
 
+## Priorite produit
+
+MelodyQuest est le seul produit en developpement continu, mais une idee
+documentee n'est pas une commande de travail. Exiger une priorisation explicite
+et un besoin concret avant d'ajouter endpoint, table, worker, flux temps reel ou
+dependance. Preferer le plus petit changement complet.
+
 ## Lecture de demarrage
 
 1. Lire `P:\AGENTS.md`.

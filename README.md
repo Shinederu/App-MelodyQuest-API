@@ -18,6 +18,13 @@ Elle gere:
 
 Le frontend source vit dans `P:\DEV\GitHub\App-MelodyQuest`.
 
+## Statut et priorite
+
+MelodyQuest est le seul produit Shinede en developpement continu. Les pistes
+documentees restent cependant un parking tant qu'elles ne sont pas
+explicitement priorisees. Toute evolution backend doit repondre a un besoin
+produit concret et employer le plus petit contrat, stockage ou flux suffisant.
+
 ## Repo et deploiement
 
 - Repo source: `P:\DEV\GitHub\App-MelodyQuest-API`
