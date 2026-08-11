@@ -391,6 +391,54 @@ class CatalogService
         }
     }
 
+    public function addFamilyAlias(int $userId, array $payload): array
+    {
+        $familyId = (int)($payload['family_id'] ?? 0);
+        $alias = trim((string)($payload['alias'] ?? ''));
+        if ($familyId <= 0 || $alias === '') {
+            throw new RuntimeException('family_id et alias requis');
+        }
+
+        $aliasLength = function_exists('mb_strlen') ? mb_strlen($alias) : strlen($alias);
+        if ($aliasLength > 160) {
+            throw new RuntimeException('alias trop long');
+        }
+
+        $family = $this->requireFamilyRecord($familyId);
+        $aliasMap = $this->normalizeAliasMap((string)$family['name'], [$alias]);
+        if (empty($aliasMap)) {
+            return [
+                'family_id' => $familyId,
+                'alias' => $alias,
+                'added' => false,
+                'already_accepted' => true,
+            ];
+        }
+        if (!$this->hasFamilyAliasesTable()) {
+            throw new RuntimeException('La migration SQL des alias doit être appliquée avant de sauvegarder des alias');
+        }
+
+        $slug = (string)array_key_first($aliasMap);
+        $normalizedAlias = (string)$aliasMap[$slug];
+        $stmt = $this->db->prepare(
+            'INSERT IGNORE INTO mq_family_aliases (family_id, alias, slug, created_by)
+             VALUES (:family_id, :alias, :slug, :created_by)'
+        );
+        $stmt->execute([
+            'family_id' => $familyId,
+            'alias' => $normalizedAlias,
+            'slug' => $slug,
+            'created_by' => $userId,
+        ]);
+
+        return [
+            'family_id' => $familyId,
+            'alias' => $normalizedAlias,
+            'added' => $stmt->rowCount() > 0,
+            'already_accepted' => $stmt->rowCount() === 0,
+        ];
+    }
+
     public function updateTrack(int $userId, array $payload): array
     {
         $id = (int)($payload['id'] ?? 0);

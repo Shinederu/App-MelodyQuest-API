@@ -199,6 +199,11 @@ try {
                     AdminMiddleware::check($userId);
                     $catalogController->createTrack($userId, $body);
                     break;
+                case 'addFamilyAlias':
+                    $userId = AuthMiddleware::check();
+                    AdminMiddleware::check($userId);
+                    $catalogController->addFamilyAlias($userId, $body);
+                    break;
                 case 'validateTrack':
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);

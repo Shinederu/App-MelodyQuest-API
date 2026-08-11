@@ -72,10 +72,12 @@ Ne pas deployer en PROD:
 - La categorie visible est activee par defaut pour les nouveaux salons.
 - La precision des reponses est a `80%` par defaut pour les nouveaux salons.
 - La selection musicale est equilibree entre categories selectionnees quand c'est possible.
+- Les pistes jouees par les participants pendant les 30 derniers jours sont evitees en priorite; la contrainte est relachee par paliers si le catalogue est trop petit.
 - La presence joueur est manuelle (`active` / `away`).
 - Le createur peut passer un joueur present/absent ou l'exclure.
 - Les joueurs absents ne bloquent pas les votes/transitions et recoivent un bonus de compensation.
-- Les essais de reponse sont conserves en DB pour admin/statistiques.
+- Les essais de reponse actifs et archives sont reunis sans doublon pour admin/statistiques.
+- L'analyse admin regroupe les fautes proches par oeuvre, remonte les alias recurrents et distingue les idees de contenu.
 - Les suggestions joueurs peuvent etre editees, refusees, marquees traitees ou appliquees directement au catalogue.
 - Les avatars historiques `action=getAvatar` sont normalises vers l'API Auth active avant retour frontend.
 - Le mode TV frontend utilise un lecteur YouTube simple; l'action experimentale `markTvRoundReady` n'existe plus.
@@ -100,7 +102,7 @@ Ne pas deployer en PROD:
 - `controllers\`: validation payload et reponses HTTP.
 - `middlewares\`: session auth et permissions.
 - `repositories\`: persistance specialisee et testable, notamment historique et outbox temps reel.
-- `services\`: logique metier, DB, selection, Mercure, outbox et suggestions.
+- `services\`: logique metier, DB, selection anti-repetition, analyse des reponses, Mercure, outbox et suggestions.
 - `utils\`: helpers request/response/YouTube et travaux post-reponse.
 - `sql\`: migrations source.
 - `scripts\`: outils CLI source, notamment imports catalogue et backfill d'historique.
@@ -342,7 +344,8 @@ Reservees a `melodyquest.catalog.manage`, `core.super_admin` ou au fallback hist
 - `POST action=updateSuggestion`
 - `POST action=applySuggestion`
 - `POST action=updateSuggestionStatus`
-- `GET action=listAnswerAttempts&outcome=wrong|correct|scored|all&search=...`
+- `GET action=listAnswerAttempts&outcome=wrong|correct|scored|all&category_id=...&period=7|30|90|365|all&search=...`
+- `POST action=addFamilyAlias`
 - `DELETE action=deleteCategory`
 - `DELETE action=deleteFamily`
 - `DELETE action=deleteTrack`
@@ -354,7 +357,9 @@ Details:
 - `updateSuggestion` enregistre les champs editables d'une suggestion sans modifier le catalogue.
 - `applySuggestion` applique une correction ou cree une nouvelle piste validee, puis marque la suggestion `reviewed`.
 - `updateSuggestionStatus` passe une suggestion en `pending`, `reviewed` ou `rejected`.
-- `listAnswerAttempts` expose des groupes de reponses et essais recents pour aider a reperer alias/corrections/idees.
+- `listAnswerAttempts` fusionne les essais live et `mq_game_session_answer_attempts`, ignore la copie live lorsqu'elle est deja archivee, puis expose `alias_candidates`, `content_ideas`, `items` et `summary`.
+- Un candidat alias demande au moins deux occurrences ou deux joueurs. Les variantes proches d'une meme oeuvre sont regroupees avant classement.
+- `addFamilyAlias` ajoute de facon idempotente un alias a une oeuvre existante. La route exige `melodyquest.catalog.manage` via le middleware admin.
 
 ## Authentification et permissions
 
@@ -396,6 +401,9 @@ Variables:
 - `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS`, conserve pour compatibilite mais detection automatique inactive
 - `MQ_AUTH_BASE_API`, fallback `BASE_API`, puis `https://api.shinederu.ch/auth/`
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, defaut `80`
+- `MQ_TRACK_REPEAT_LOOKBACK_DAYS`, defaut `30`
+- `MQ_TRACK_REPEAT_STRICT_DAYS`, defaut `7`, borne par la fenetre precedente
+- `MQ_TRACK_REPEAT_HISTORY_LIMIT`, defaut `500`
 - `MQ_AWAY_BONUS_PERCENT`, defaut `10`
 - `MQ_ROUND_PRELOAD_SECONDS`, defaut `3`, borne `0` a `10`
 - `MQ_TV_PRELOAD_LOOKAHEAD`, defaut `3`, borne `1` a `5`
@@ -505,4 +513,5 @@ Get-ChildItem P:\PROD\API\melodyquest -Force |
 - YouTube reste la source principale; l'hebergement local audio a ete refuse.
 - Les migrations SQL doivent etre appliquees explicitement si un schema neuf est prepare.
 - Les donnees historiques de tentatives/reponses sont utiles pour statistiques et amelioration catalogue.
+- L'anti-repetition s'appuie sur `mq_game_session_rounds` et les participants du salon; ne pas ajouter une seconde table d'historique sans besoin distinct.
 - Si une modification touche le player ou la TV, tester un vrai salon avec telephone/PC/TV avant de conclure.

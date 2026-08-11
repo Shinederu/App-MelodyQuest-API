@@ -54,3 +54,26 @@ mqTest('Une catégorie épuisée cède les manches restantes aux autres', functi
     mqAssertSame(7, array_sum($quotas));
     mqAssertSame($quotas[20], $quotas[30]);
 });
+
+mqTest('L anti-répétition relâche progressivement l historique sans sacrifier la partie en cours', function () use ($lobbyService): void {
+    $tiers = mqInvokePrivate($lobbyService, 'buildTrackSelectionExclusionTiers', [
+        [1, 2],
+        [2, 3, 4, 5],
+        [4, 5],
+    ]);
+
+    mqAssertSame([1, 2, 3, 4, 5], $tiers[0]);
+    mqAssertSame([1, 2, 4, 5], $tiers[1]);
+    mqAssertSame([1, 2], $tiers[2]);
+    mqAssertSame([], $tiers[3]);
+});
+
+mqTest('Les niveaux anti-répétition identiques ne déclenchent pas de requêtes inutiles', function () use ($lobbyService): void {
+    $tiers = mqInvokePrivate($lobbyService, 'buildTrackSelectionExclusionTiers', [
+        [7, 8],
+        [8],
+        [8],
+    ]);
+
+    mqAssertSame([[7, 8], []], $tiers);
+});

@@ -39,6 +39,9 @@ Configurer cote PHP runtime:
 - `MERCURE_SUBSCRIBER_JWT_KEY`
 - `MQ_ROUND_PRELOAD_SECONDS`, optionnel, defaut `3`
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, optionnel, defaut `80`
+- `MQ_TRACK_REPEAT_LOOKBACK_DAYS`, optionnel, defaut `30`
+- `MQ_TRACK_REPEAT_STRICT_DAYS`, optionnel, defaut `7`
+- `MQ_TRACK_REPEAT_HISTORY_LIMIT`, optionnel, defaut `500`
 - `MQ_AWAY_BONUS_PERCENT`, optionnel, defaut `10`
 - `MQ_TV_PRELOAD_LOOKAHEAD`, optionnel, defaut `3`
 - `MQ_AUTH_BASE_API`, optionnel
@@ -87,8 +90,9 @@ Avec un compte admin catalogue:
 5. `POST action=updateSuggestion`.
 6. `POST action=applySuggestion`.
 7. `POST action=updateSuggestionStatus`.
-8. `GET action=listAnswerAttempts&outcome=all`.
-9. CRUD categories/familles/pistes si la passe touche le catalogue.
+8. `GET action=listAnswerAttempts&outcome=wrong&period=90` et verifier les essais archives sans doublon.
+9. `POST action=addFamilyAlias` sur un candidat recurrent, puis verifier l'alias dans l'oeuvre.
+10. CRUD categories/familles/pistes si la passe touche le catalogue.
 
 ## Smoke tests frontend
 

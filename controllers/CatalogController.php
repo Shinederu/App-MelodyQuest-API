@@ -52,6 +52,12 @@ class CatalogController
         json_success('Musique ajoutee en attente de validation', $result, 201);
     }
 
+    public function addFamilyAlias(int $userId, array $payload): void
+    {
+        $result = $this->service->addFamilyAlias($userId, $payload);
+        json_success($result['added'] ? 'Alias ajouté' : 'Alias déjà accepté', $result);
+    }
+
     public function updateCategory(array $payload): void
     {
         $result = $this->service->updateCategory($payload);

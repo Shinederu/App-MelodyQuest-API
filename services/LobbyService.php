@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/DatabaseService.php';
 require_once __DIR__ . '/GameSessionService.php';
+require_once __DIR__ . '/TrackSelectionHistoryService.php';
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../repositories/PdoGameSessionRepository.php';
 require_once __DIR__ . '/../utils/youtube.php';
@@ -10,6 +11,7 @@ class LobbyService
 {
     private PDO $db;
     private GameSessionService $gameSessions;
+    private TrackSelectionHistoryService $trackHistory;
     private ?bool $familyAliasesTableExists = null;
     private ?bool $youtubeUrlColumnExists = null;
     private static ?bool $familyAliasesTableExistsCache = null;
@@ -19,6 +21,7 @@ class LobbyService
     {
         $this->db = $db ?? DatabaseService::getInstance();
         $this->gameSessions = new GameSessionService(new PdoGameSessionRepository($this->db));
+        $this->trackHistory = new TrackSelectionHistoryService($this->db);
     }
 
     public function createLobby(int $ownerUserId, array $payload): array
@@ -1658,22 +1661,77 @@ class LobbyService
         $usedTrackIds = $this->getScheduledTrackIds($lobbyId);
         $usedFamilyIds = $this->getScheduledFamilyIds($lobbyId);
 
-        $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, $usedTrackIds, $usedFamilyIds);
-        if ($trackId !== null) {
-            return $trackId;
-        }
+        $recentTracks = $this->trackHistory->getRecentTrackBucketsForLobby($lobbyId);
+        $exclusionTiers = $this->buildTrackSelectionExclusionTiers(
+            $usedTrackIds,
+            $recentTracks['lookback'] ?? [],
+            $recentTracks['strict'] ?? []
+        );
 
-        $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, $usedTrackIds, []);
-        if ($trackId !== null) {
-            return $trackId;
-        }
+        foreach ($exclusionTiers as $excludedTrackIds) {
+            $trackId = $this->pickBalancedEligibleTrack(
+                $lobbyId,
+                $selectedCategoryIds,
+                $totalRounds,
+                $excludedTrackIds,
+                $usedFamilyIds
+            );
+            if ($trackId !== null) {
+                return $trackId;
+            }
 
-        $trackId = $this->pickBalancedEligibleTrack($lobbyId, $selectedCategoryIds, $totalRounds, [], []);
-        if ($trackId !== null) {
-            return $trackId;
+            $trackId = $this->pickBalancedEligibleTrack(
+                $lobbyId,
+                $selectedCategoryIds,
+                $totalRounds,
+                $excludedTrackIds,
+                []
+            );
+            if ($trackId !== null) {
+                return $trackId;
+            }
         }
 
         throw new RuntimeException('Aucune musique disponible pour les catégories sélectionnées');
+    }
+
+    private function buildTrackSelectionExclusionTiers(
+        array $usedTrackIds,
+        array $lookbackTrackIds,
+        array $strictTrackIds
+    ): array {
+        $usedTrackIds = $this->normalizePositiveIds($usedTrackIds);
+        $lookbackTrackIds = $this->normalizePositiveIds($lookbackTrackIds);
+        $strictTrackIds = $this->normalizePositiveIds($strictTrackIds);
+
+        $tiers = [
+            array_values(array_unique(array_merge($usedTrackIds, $lookbackTrackIds))),
+            array_values(array_unique(array_merge($usedTrackIds, $strictTrackIds))),
+            $usedTrackIds,
+            [],
+        ];
+
+        $uniqueTiers = [];
+        $seen = [];
+        foreach ($tiers as $tier) {
+            sort($tier, SORT_NUMERIC);
+            $key = implode(',', $tier);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $uniqueTiers[] = $tier;
+        }
+
+        return $uniqueTiers;
+    }
+
+    private function normalizePositiveIds(array $values): array
+    {
+        return array_values(array_unique(array_filter(
+            array_map('intval', $values),
+            static fn (int $value): bool => $value > 0
+        )));
     }
 
     private function getPlayedTrackIds(int $lobbyId): array
