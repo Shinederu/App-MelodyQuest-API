@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/DatabaseService.php';
 require_once __DIR__ . '/CatalogService.php';
+require_once __DIR__ . '/PlayerSessionService.php';
 require_once __DIR__ . '/../utils/youtube.php';
 
 class SuggestionService
@@ -16,9 +17,12 @@ class SuggestionService
         $this->db = DatabaseService::getInstance();
     }
 
-    public function submit(?int $userId, array $payload): array
+    public function submit(?int $actorId, array $payload): array
     {
-        $this->enforceSubmitRateLimit($userId);
+        $this->enforceSubmitRateLimit($actorId);
+        $identity = $actorId !== null && $actorId !== 0
+            ? (new PlayerSessionService($this->db))->getIdentityByActorId($actorId)
+            : null;
 
         $type = (string)($payload['suggestion_type'] ?? 'track_correction');
         if (!in_array($type, ['track_correction', 'new_track'], true)) {
@@ -57,15 +61,18 @@ class SuggestionService
 
         $stmt = $this->db->prepare(
             'INSERT INTO mq_player_suggestions
-             (suggestion_type, user_id, lobby_id, round_id, track_id, current_title, current_artist, current_youtube_video_id, current_family_name,
+             (suggestion_type, user_id, actor_id, guest_session_id, submitter_name_snapshot, lobby_id, round_id, track_id, current_title, current_artist, current_youtube_video_id, current_family_name,
               proposed_title, proposed_artist, proposed_youtube_url, proposed_youtube_video_id, proposed_alias, note)
              VALUES
-             (:suggestion_type, :user_id, :lobby_id, :round_id, :track_id, :current_title, :current_artist, :current_youtube_video_id, :current_family_name,
+             (:suggestion_type, :user_id, :actor_id, :guest_session_id, :submitter_name_snapshot, :lobby_id, :round_id, :track_id, :current_title, :current_artist, :current_youtube_video_id, :current_family_name,
               :proposed_title, :proposed_artist, :proposed_youtube_url, :proposed_youtube_video_id, :proposed_alias, :note)'
         );
         $stmt->execute([
             'suggestion_type' => $type,
-            'user_id' => $userId ?: null,
+            'user_id' => $actorId !== null && $actorId > 0 ? $actorId : null,
+            'actor_id' => $actorId ?: null,
+            'guest_session_id' => $actorId !== null && $actorId < 0 ? abs($actorId) : null,
+            'submitter_name_snapshot' => $identity['username'] ?? null,
             'lobby_id' => (int)($payload['lobby_id'] ?? 0) ?: null,
             'round_id' => (int)($payload['round_id'] ?? 0) ?: null,
             'track_id' => $trackId ?: null,
@@ -93,7 +100,7 @@ class SuggestionService
         $where = $status === 'all' ? '' : 'WHERE s.status = :status';
         $stmt = $this->db->prepare(
             'SELECT s.*,
-                    u.username,
+                    COALESCE(NULLIF(s.submitter_name_snapshot, ""), u.username) AS username,
                     reviewer.username AS reviewer_username,
                     applied.title AS applied_track_title,
                     applied.artist AS applied_track_artist
@@ -424,9 +431,9 @@ class SuggestionService
         return $row ?: null;
     }
 
-    private function enforceSubmitRateLimit(?int $userId): void
+    private function enforceSubmitRateLimit(?int $actorId): void
     {
-        $key = $this->getRateLimitKey($userId);
+        $key = $this->getRateLimitKey($actorId);
         if ($key === '') {
             return;
         }
@@ -460,10 +467,10 @@ class SuggestionService
         }
     }
 
-    private function getRateLimitKey(?int $userId): string
+    private function getRateLimitKey(?int $actorId): string
     {
-        if ($userId !== null && $userId > 0) {
-            return 'user:' . $userId;
+        if ($actorId !== null && $actorId !== 0) {
+            return 'actor:' . $actorId;
         }
 
         $forwardedFor = (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');

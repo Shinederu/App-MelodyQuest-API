@@ -5,7 +5,7 @@
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
 - API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `bin\`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/019_melodyquest_realtime_outbox.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/020_melodyquest_guest_players.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -13,7 +13,8 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260810-history-safety`.
+- Cache-bust frontend attendu: `20260831-guest-mode`.
+- La racine ouvre le menu et permet de jouer sans compte avec un pseudo temporaire.
 - Mode actif: reponses, score, classement, votes.
 - Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes.
 - Les suppressions de catalogue et de salon demandent une confirmation nommee.
@@ -45,12 +46,24 @@ Configurer cote PHP runtime:
 - `MQ_AWAY_BONUS_PERCENT`, optionnel, defaut `10`
 - `MQ_TV_PRELOAD_LOOKAHEAD`, optionnel, defaut `3`
 - `MQ_AUTH_BASE_API`, optionnel
+- `MQ_GUEST_SESSION_TTL_SECONDS`, optionnel, defaut `7200`
+- `MQ_GUEST_SESSION_TOUCH_INTERVAL_SECONDS`, optionnel, defaut `300`
 - `MQ_MERCURE_PUBLISH_TIMEOUT_SECONDS`, optionnel, defaut `1`
 - `MQ_REALTIME_OUTBOX_BATCH_SIZE`, optionnel, defaut `8`
 - `MQ_REALTIME_OUTBOX_MAX_RUNTIME_MS`, optionnel, defaut `2000`
 - `MQ_REALTIME_OUTBOX_LOCK_TIMEOUT_SECONDS`, optionnel, defaut `30`
 
 ## Smoke tests API
+
+Sans cookie `sid` ni `mq_guest`:
+
+1. `GET action=getPlayerIdentity` retourne `identity=null` sans creer de ligne.
+2. `POST action=updateGuestNickname` cree une identite avec `actor_id` negatif et un cookie HttpOnly.
+3. `POST action=createLobby`, puis `POST action=joinLobby` depuis une seconde session invitee.
+4. Verifier que `mq_lobby_players.user_id IS NULL`, que les deux `actor_id` sont distincts et que le proprietaire invite peut gerer le second joueur.
+5. Jouer une manche, verifier reponses/scores/votes, puis archiver: les snapshots existent dans `mq_game_session_*` sans ligne ajoutee dans `users`.
+6. Lier une TV et envoyer une suggestion depuis l'invite.
+7. `POST action=endGuestSession` retire le joueur actif et invalide le cookie.
 
 Avec une session `sid` valide:
 
@@ -96,27 +109,29 @@ Avec un compte admin catalogue:
 
 ## Smoke tests frontend
 
-1. Ouvrir `https://melodyquest.shinederu.ch/#/public`.
-2. Se connecter.
-3. Depuis `#/main`, verifier le switch actif/passif.
-4. Creer un salon actif, puis rejoindre avec un deuxieme utilisateur si possible.
-5. Verifier `#/lobby`: categories, joueurs, present/absent, partage, liaison TV.
-6. Lancer le mode actif:
+1. Ouvrir `https://melodyquest.shinederu.ch/` sans session: le menu doit apparaitre directement.
+2. Verifier le pseudo genere, le changer, puis recharger la page.
+3. Creer un salon actif en invite, puis rejoindre avec un second navigateur prive sans compte.
+4. Ouvrir `#/public`, tester connexion/inscription et revenir au jeu.
+5. Depuis `#/main`, verifier le switch actif/passif.
+6. Creer aussi un salon avec un compte pour verifier la compatibilite historique.
+7. Verifier `#/lobby`: categories, joueurs, present/absent, partage, liaison TV.
+8. Lancer le mode actif:
    - video cachee avant revelation;
    - champ reponse autofocus au debut de manche;
    - mauvaises reponses limitees;
    - solution claire apres bonne reponse/revelation;
    - classement et votes coherents.
-7. Creer un salon passif:
+9. Creer un salon passif:
    - salon prive par defaut;
    - partage et liaison TV disponibles;
    - pas de scoreboard pendant la partie passive;
    - retour automatique au lobby a la fin.
-8. Verifier `/tv`: QR affiche, pas de header/footer, son actif apres liaison.
-9. Verifier `#/tv-link`: saisie code et scan QR si support camera disponible.
-10. Verifier le mode joueur de salon si une TV est liee.
-11. Verifier `#/suggest-track`.
-12. Verifier les pages `#/management*` avec un compte admin.
+10. Verifier `/tv`: QR affiche, pas de header/footer, son actif apres liaison.
+11. Verifier `#/tv-link`: saisie code et scan QR si support camera disponible.
+12. Verifier le mode joueur de salon si une TV est liee.
+13. Verifier `#/suggest-track`.
+14. Verifier les pages `#/management*` avec un compte admin; un invite doit etre redirige.
 
 ## Mercure
 
@@ -134,6 +149,8 @@ Avec un compte admin catalogue:
 - Toutes les actions valides retournent `success=true`.
 - Les erreurs retournent `success=false` avec un status HTTP coherent.
 - Les droits owner/admin sont bloques pour les autres utilisateurs.
+- Deux invites sont distingues par `actor_id` et aucun compte artificiel n'apparait dans `users`.
+- L'expiration ou la deconnexion d'un invite ne laisse pas de joueur actif bloquant les votes.
 - Les donnees solution ne sont pas exposees trop tot aux joueurs qui n'ont pas trouve.
 - Le score se met a jour apres reponse correcte.
 - Les joueurs absents ne bloquent pas les votes/transitions.

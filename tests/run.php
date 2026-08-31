@@ -8,5 +8,6 @@ require_once __DIR__ . '/AnswerInsightAnalyzerTest.php';
 require_once __DIR__ . '/AdminInsightsContractTest.php';
 require_once __DIR__ . '/HistoryContractTest.php';
 require_once __DIR__ . '/RealtimeOutboxTest.php';
+require_once __DIR__ . '/GuestPlayerContractTest.php';
 
 mqFinishTests();

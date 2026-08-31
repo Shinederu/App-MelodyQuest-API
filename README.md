@@ -14,6 +14,7 @@ Elle gere:
 - historique des tentatives de reponse;
 - presence manuelle;
 - liaison TV;
+- identites joueur compte ou invite;
 - snapshots Mercure.
 
 Le frontend source vit dans `P:\DEV\GitHub\App-MelodyQuest`.
@@ -82,10 +83,13 @@ Ne pas deployer en PROD:
 - Les avatars historiques `action=getAvatar` sont normalises vers l'API Auth active avant retour frontend.
 - Le mode TV frontend utilise un lecteur YouTube simple; l'action experimentale `markTvRoundReady` n'existe plus.
 - Les publications Mercure sont coalescees dans `mq_realtime_outbox` et executees apres la reponse HTTP.
+- La racine frontend et les parcours joueur fonctionnent sans compte.
+- Les comptes utilisent `actor_id = users.id`; les invites utilisent `actor_id = -mq_guest_sessions.id`.
+- Une session invitee expire apres 2 heures d'inactivite glissantes et ne cree jamais de ligne dans `users`.
 
 ## Contraintes produit
 
-- Auth obligatoire pour jouer.
+- Compte facultatif pour jouer; authentification obligatoire uniquement pour l'administration.
 - Proposition publique de nouvelle musique possible sans session.
 - Stockage des pistes par identifiant YouTube; aucun fichier audio local.
 - YouTube reste la source principale.
@@ -100,7 +104,7 @@ Ne pas deployer en PROD:
 - `bin\`: worker CLI runtime de reprise de la file temps reel.
 - `config\`: configuration runtime non secrete et constantes.
 - `controllers\`: validation payload et reponses HTTP.
-- `middlewares\`: session auth et permissions.
+- `middlewares\`: session auth, identite joueur compte/invite et permissions.
 - `repositories\`: persistance specialisee et testable, notamment historique et outbox temps reel.
 - `services\`: logique metier, DB, selection anti-repetition, analyse des reponses, Mercure, outbox et suggestions.
 - `utils\`: helpers request/response/YouTube et travaux post-reponse.
@@ -137,6 +141,7 @@ Migrations:
 - `017_melodyquest_admin_suggestion_review.sql`: champs de revue/application admin des suggestions.
 - `018_melodyquest_game_history.sql`: sessions de jeu et snapshots append-only.
 - `019_melodyquest_realtime_outbox.sql`: file durable et coalescee des snapshots Mercure.
+- `020_melodyquest_guest_players.sql`: sessions invitees, namespace `actor_id` et attribution anonyme de l'historique.
 
 Regles DB:
 
@@ -145,6 +150,8 @@ Regles DB:
 - Ne jamais supprimer de donnees sans demande explicite.
 - Les anciennes donnees de tentatives/reponses sont conservees pour statistiques et analyse admin.
 - L'historique `mq_game_session_*` ne reference pas les tables live: les noms, pistes, categories et utilisateurs utiles sont snapshots.
+- Les colonnes `user_id` restent reservees aux comptes et sont `NULL` pour un invite; `actor_id` identifie tous les joueurs.
+- La suppression d'une session invitee expiree conserve les snapshots et historiques de partie.
 
 ### Historique des parties
 
@@ -245,7 +252,19 @@ Reponse erreur:
 }
 ```
 
-## Actions authentifiees joueur
+## Identite joueur et invites
+
+- `GET action=getPlayerIdentity`: renvoie le compte courant, la session invitee courante ou `null`; ne cree pas de session.
+- `POST action=updateGuestNickname`: cree au besoin la session invitee puis valide/modifie son pseudo.
+- `POST action=endGuestSession`: retire l'invite de ses salons actifs, supprime la session temporaire et efface le cookie.
+- Cookie invite: `mq_guest`, token aleatoire 256 bits, `Secure`, `HttpOnly`, `SameSite=Lax`, chemin `/melodyquest/`.
+- Seul le hash SHA-256 du token est stocke dans `mq_guest_sessions`.
+- TTL glissant par defaut: `7200` secondes; le prolongement DB est limite a une ecriture toutes les 5 minutes.
+- Les pseudos font 3 a 32 lettres/chiffres/tirets/underscores, ne peuvent pas usurper un compte ou un nom reserve et restent uniques parmi les invites actifs.
+- Les `actor_id` positifs sont des comptes; les `actor_id` negatifs sont des invites. `0` n'est jamais une identite serveur valide.
+- Les invites n'obtiennent jamais les permissions admin et leurs statistiques de profil ne sont pas conservees.
+
+## Actions joueur compte ou invite
 
 - `POST action=createLobby`
 - `POST action=joinLobby`
@@ -285,13 +304,13 @@ Details importants:
 - `createLobby` utilise `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, `80` par defaut.
 - `updateLobbyConfig` accepte les memes options de reglage.
 - `listPublicLobbies` filtre par `game_mode`; `participative` est le defaut.
-- `touchLobby` accepte `presence_status` (`active`, `away`) et, pour le createur, `target_user_id`.
+- `touchLobby` accepte `presence_status` (`active`, `away`) et, pour le createur, `target_actor_id` (`target_user_id` reste tolere pour compatibilite).
 - `kickPlayer` retire un joueur du salon sans detruire son historique de score.
 - `voteRevealRound` demande 100% des joueurs actifs, refuse si l'option est desactivee, si quelqu'un a deja trouve, ou si la reponse est deja revelee.
 - `voteNextRound` demande 50% des joueurs actifs apres revelation et refuse tant qu'un verrou de suggestion est actif.
 - `holdSuggestion` bloque temporairement le passage a la manche suivante pendant qu'un joueur propose une correction.
-- `submitSuggestion` accepte `track_correction` authentifie depuis une partie et `new_track` depuis la page publique.
-- `submitSuggestion` limite l'abus a 5 suggestions par 10 minutes et par utilisateur/IP.
+- `submitSuggestion` accepte `track_correction` depuis une partie compte/invite et `new_track` depuis la page publique.
+- `submitSuggestion` limite l'abus a 5 suggestions par 10 minutes et par acteur/IP.
 - `submitAnswer` utilise `answer_similarity_threshold` avec similarite hybride et garde-fous sur reponses courtes.
 
 ## Round state
@@ -364,7 +383,9 @@ Details:
 ## Authentification et permissions
 
 - Session via cookie `sid`.
+- Session invitee via cookie `mq_guest`; elle n'accorde aucun droit administratif.
 - Tables Auth: `auth_sessions`, `users`.
+- Table temporaire MelodyQuest: `mq_guest_sessions`.
 - Config Auth partagee via runtime `P:\PROD\API\auth` quand disponible.
 - Permissions via `Module-ShinedeCore-PHP`, deploye sous `P:\PROD\API\core`.
 - Permission stable:
@@ -400,6 +421,8 @@ Variables:
 - `MQ_OWNER_STALE_TIMEOUT_SECONDS`, defaut `300`
 - `MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS`, conserve pour compatibilite mais detection automatique inactive
 - `MQ_AUTH_BASE_API`, fallback `BASE_API`, puis `https://api.shinederu.ch/auth/`
+- `MQ_GUEST_SESSION_TTL_SECONDS`, defaut `7200`, borne `900` a `86400`
+- `MQ_GUEST_SESSION_TOUCH_INTERVAL_SECONDS`, defaut `300`, borne `60` a `900`
 - `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, defaut `80`
 - `MQ_TRACK_REPEAT_LOOKBACK_DAYS`, defaut `30`
 - `MQ_TRACK_REPEAT_STRICT_DAYS`, defaut `7`, borne par la fenetre precedente
@@ -470,7 +493,7 @@ Il n'y a pas de fallback SSE supporte dans l'API actuelle.
 - `Module-ShinedeCore-PHP`: permissions `core_*`.
 - `App-MelodyQuest`: frontend navigateur.
 - Mercure: snapshots.
-- MySQL `ShinedeCore`: `users`, `auth_sessions`, `core_*`, `mq_*`.
+- MySQL `ShinedeCore`: `users`, `auth_sessions`, `core_*`, `mq_*`; aucun faux compte n'est cree pour un invite.
 
 Une integration avec un autre projet doit passer par l'API proprietaire du projet cible, pas par ecriture directe dans ses tables.
 
@@ -488,6 +511,15 @@ Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
 ## Deploiement
 
 Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.env`, logs, caches runtime).
+
+Pour le mode invite, respecter cet ordre afin d'eviter un contrat mixte:
+
+1. appliquer `sql\020_melodyquest_guest_players.sql` sur `ShinedeCore`;
+2. deployer immediatement le runtime API;
+3. deployer ensuite le frontend `20260831-guest-mode`;
+4. verifier un compte existant puis deux sessions invitees distinctes.
+
+Le fichier SQL reste dans DEV et ne doit pas etre copie dans le runtime PROD.
 
 Copie runtime type:
 
@@ -512,6 +544,7 @@ Get-ChildItem P:\PROD\API\melodyquest -Force |
 - Ne pas restaurer `markTvRoundReady` ou le double lecteur TV sans nouvelle analyse.
 - YouTube reste la source principale; l'hebergement local audio a ete refuse.
 - Les migrations SQL doivent etre appliquees explicitement si un schema neuf est prepare.
+- Deployer `020` avant le runtime qui ecrit `actor_id`; la migration est idempotente et retroalimente les comptes existants sans supprimer de lignes.
 - Les donnees historiques de tentatives/reponses sont utiles pour statistiques et amelioration catalogue.
 - L'anti-repetition s'appuie sur `mq_game_session_rounds` et les participants du salon; ne pas ajouter une seconde table d'historique sans besoin distinct.
 - Si une modification touche le player ou la TV, tester un vrai salon avec telephone/PC/TV avant de conclure.

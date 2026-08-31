@@ -39,7 +39,7 @@ class TrackSelectionHistoryService
                  JOIN mq_game_session_players history_player
                    ON history_player.game_session_id = game_session.id
                  JOIN mq_lobby_players current_player
-                   ON current_player.user_id = history_player.user_id
+                   ON current_player.actor_id = history_player.actor_id
                   AND current_player.lobby_id = :lobby_id
                   AND current_player.presence_status <> "removed"
                  WHERE game_session.archived_at >= :lookback_cutoff

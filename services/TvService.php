@@ -44,7 +44,7 @@ class TvService
         return $this->formatPairing($this->requirePairingByToken($deviceToken));
     }
 
-    public function linkPairing(int $userId, string $pairingCode, int $lobbyId): array
+    public function linkPairing(int $actorId, string $pairingCode, int $lobbyId): array
     {
         $this->cleanupExpiredPairings();
         if ($lobbyId <= 0) {
@@ -56,7 +56,7 @@ class TvService
             throw new RuntimeException('Code TV invalide');
         }
 
-        if (!$this->isLobbyMember($lobbyId, $userId)) {
+        if (!$this->isLobbyMember($lobbyId, $actorId)) {
             throw new RuntimeException('Tu dois être dans le salon pour lier une TV');
         }
 
@@ -67,6 +67,7 @@ class TvService
              SET status = "linked",
                  lobby_id = :lobby_id,
                  linked_by_user_id = :user_id,
+                 linked_by_actor_id = :actor_id,
                  linked_at = NOW(3),
                  last_seen_at = NOW(3),
                  expires_at = DATE_ADD(NOW(3), INTERVAL ' . self::LINKED_TTL_HOURS . ' HOUR)
@@ -74,7 +75,8 @@ class TvService
         );
         $stmt->execute([
             'lobby_id' => $lobbyId,
-            'user_id' => $userId,
+            'user_id' => $actorId > 0 ? $actorId : null,
+            'actor_id' => $actorId,
             'id' => (int)$pairing['id'],
         ]);
 
@@ -165,18 +167,19 @@ class TvService
         return $pairing;
     }
 
-    private function isLobbyMember(int $lobbyId, int $userId): bool
+    private function isLobbyMember(int $lobbyId, int $actorId): bool
     {
         $stmt = $this->db->prepare(
             'SELECT 1
              FROM mq_lobby_players
              WHERE lobby_id = :lobby_id
-               AND user_id = :user_id
+               AND actor_id = :actor_id
+               AND presence_status <> "removed"
              LIMIT 1'
         );
         $stmt->execute([
             'lobby_id' => $lobbyId,
-            'user_id' => $userId,
+            'actor_id' => $actorId,
         ]);
 
         return (bool)$stmt->fetch();

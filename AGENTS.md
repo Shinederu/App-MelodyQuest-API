@@ -36,7 +36,7 @@ dependance. Preferer le plus petit changement complet.
 - `bin\`: worker CLI runtime de reprise de l'outbox Mercure.
 - `config\`: constantes runtime non secretes et lecture env.
 - `controllers\`: validation payload et reponses.
-- `middlewares\`: auth session et permissions.
+- `middlewares\`: auth session, identite joueur compte/invite et permissions.
 - `repositories\`: persistance specialisee, notamment historique et outbox temps reel.
 - `services\`: logique metier, DB, Mercure, outbox, suggestions et TV.
 - `utils\`: helpers request/response/YouTube et travaux post-reponse.
@@ -61,10 +61,15 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - La TV ne signale plus `markTvRoundReady`; ne pas restaurer cette action sans nouvelle analyse.
 - YouTube reste la source principale; ne pas ajouter de stockage audio local.
 - Les commandes HTTP ne publient jamais directement vers Mercure: elles alimentent `mq_realtime_outbox`.
+- Les parcours joueur acceptent un compte ou une session invitee; le management exige toujours un compte autorise.
+- Une identite joueur utilise `actor_id`: positif pour `users.id`, negatif pour `-mq_guest_sessions.id`, jamais `0` cote serveur.
+- Ne jamais creer de ligne `users` pour un invite ni donner de permission admin a une session invitee.
+- Les `user_id` restent `NULL` pour les invites; conserver les snapshots de nom dans les historiques.
 
 ## Auth, permissions et DB
 
 - Auth via session `sid`, tables `auth_sessions` et `users`.
+- Invites via cookie HttpOnly `mq_guest` et table temporaire `mq_guest_sessions`, TTL glissant de 2 heures par defaut.
 - Config runtime partagee avec `Module-Auth-API` quand l'autoload Auth est present en PROD.
 - Permissions via `Module-ShinedeCore-PHP`, deploye sous `P:\PROD\API\core`.
 - Verifier les droits avec `hasPermission($userId, 'melodyquest', '<permission>')`.
@@ -82,6 +87,7 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Pas de fallback SSE supporte dans l'API actuelle.
 - Toute information temps reel doit pouvoir etre reconstruite via HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`, `getTvState`).
 - La migration `019_melodyquest_realtime_outbox.sql` doit etre appliquee avant de deployer le code d'outbox.
+- La migration `020_melodyquest_guest_players.sql` doit etre appliquee avant le runtime invite; elle ne supprime aucune donnee de jeu.
 - Les lignes sont coalescees par flux et acquittees avec leur generation; ne pas remplacer ce mecanisme par un `publish()` synchrone dans un controleur.
 - Le drainage normal commence seulement apres `fastcgi_finish_request()`; un echec du hub ne doit pas faire echouer la commande metier.
 - `bin\process_realtime_outbox.php` est le filet CLI de reprise et peut etre supervise en mode `--loop` si necessaire.

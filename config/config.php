@@ -31,6 +31,9 @@ define('MQ_TRACK_REPEAT_HISTORY_LIMIT', max(50, min(2000, (int)($_ENV['MQ_TRACK_
 define('MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS', max(20, (int)($_ENV['MQ_PLAYER_INACTIVE_TIMEOUT_SECONDS'] ?? 45)));
 define('MQ_OWNER_STALE_TIMEOUT_SECONDS', max(60, (int)($_ENV['MQ_OWNER_STALE_TIMEOUT_SECONDS'] ?? 300)));
 define('MQ_AUTH_BASE_API', $_ENV['MQ_AUTH_BASE_API'] ?? $_ENV['BASE_API'] ?? 'https://api.shinederu.ch/auth/');
+define('MQ_GUEST_SESSION_TTL_SECONDS', max(900, min(86400, (int)($_ENV['MQ_GUEST_SESSION_TTL_SECONDS'] ?? 7200))));
+define('MQ_GUEST_SESSION_TOUCH_INTERVAL_SECONDS', max(60, min(900, (int)($_ENV['MQ_GUEST_SESSION_TOUCH_INTERVAL_SECONDS'] ?? 300))));
+define('MQ_GUEST_COOKIE_NAME', 'mq_guest');
 
 define('MQ_MERCURE_HUB_URL', $_ENV['MQ_MERCURE_HUB_URL'] ?? $_ENV['MERCURE_HUB_URL'] ?? 'https://mercure.shinederu.ch/.well-known/mercure');
 define('MQ_MERCURE_PUBLISH_URL', $_ENV['MQ_MERCURE_PUBLISH_URL'] ?? $_ENV['MERCURE_PUBLISH_URL'] ?? MQ_MERCURE_HUB_URL);

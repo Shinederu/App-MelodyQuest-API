@@ -15,6 +15,7 @@ if (file_exists($authVendorAutoload)) {
 require_once __DIR__ . '/utils/response.php';
 require_once __DIR__ . '/utils/request.php';
 require_once __DIR__ . '/middlewares/AuthMiddleware.php';
+require_once __DIR__ . '/middlewares/PlayerMiddleware.php';
 require_once __DIR__ . '/middlewares/AdminMiddleware.php';
 require_once __DIR__ . '/controllers/LobbyController.php';
 require_once __DIR__ . '/controllers/CatalogController.php';
@@ -37,40 +38,39 @@ try {
     switch ($method) {
         case 'GET':
             switch ($action) {
+                case 'getPlayerIdentity':
+                    json_success(null, ['identity' => PlayerMiddleware::optional()]);
+                    break;
                 case 'getLobbyByCode':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->getByCode($userId, $_GET);
+                    $identity = PlayerMiddleware::check($_GET['guest_nickname'] ?? null);
+                    $lobbyController->getByCode((int)$identity['actor_id'], $_GET);
                     break;
                 case 'getPlaybackState':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->getPlayback($userId, $_GET);
+                    $identity = PlayerMiddleware::check($_GET['guest_nickname'] ?? null);
+                    $lobbyController->getPlayback((int)$identity['actor_id'], $_GET);
                     break;
                 case 'listTrackPool':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->listTrackPool($userId, $_GET);
+                    $identity = PlayerMiddleware::check($_GET['guest_nickname'] ?? null);
+                    $lobbyController->listTrackPool((int)$identity['actor_id'], $_GET);
                     break;
                 case 'getRoundState':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->getRoundState($userId, $_GET);
+                    $identity = PlayerMiddleware::check($_GET['guest_nickname'] ?? null);
+                    $lobbyController->getRoundState((int)$identity['actor_id'], $_GET);
                     break;
                 case 'getScoreboard':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->getScoreboard($userId, $_GET);
+                    $identity = PlayerMiddleware::check($_GET['guest_nickname'] ?? null);
+                    $lobbyController->getScoreboard((int)$identity['actor_id'], $_GET);
                     break;
                 case 'listPublicLobbies':
-                    AuthMiddleware::check();
                     $lobbyController->listPublicLobbies();
                     break;
                 case 'listCategories':
-                    AuthMiddleware::check();
                     $catalogController->listCategories();
                     break;
                 case 'listFamilies':
-                    AuthMiddleware::check();
                     $catalogController->listFamilies($_GET);
                     break;
                 case 'listTracks':
-                    AuthMiddleware::check();
                     $catalogController->listTracks($_GET);
                     break;
                 case 'listPendingTracks':
@@ -101,88 +101,99 @@ try {
 
         case 'POST':
             switch ($action) {
+                case 'updateGuestNickname':
+                    $nickname = (string)($body['nickname'] ?? '');
+                    if ($nickname === '') {
+                        json_error('nickname requis', 400);
+                    }
+                    json_success('Pseudo invité mis à jour', ['identity' => PlayerMiddleware::renameGuest($nickname)]);
+                    break;
+                case 'endGuestSession':
+                    PlayerMiddleware::endGuest();
+                    json_success('Session invitée terminée', ['ended' => true]);
+                    break;
                 case 'createLobby':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->create($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->create($identity, $body);
                     break;
                 case 'joinLobby':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->join($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->join($identity, $body);
                     break;
                 case 'leaveLobby':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->leave($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->leave((int)$identity['actor_id'], $body);
                     break;
                 case 'touchLobby':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->touch($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->touch((int)$identity['actor_id'], $body);
                     break;
                 case 'kickPlayer':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->kickPlayer($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->kickPlayer((int)$identity['actor_id'], $body);
                     break;
                 case 'deleteLobby':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->delete($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->delete((int)$identity['actor_id'], $body);
                     break;
                 case 'resetLobbyForReplay':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->resetForReplay($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->resetForReplay((int)$identity['actor_id'], $body);
                     break;
                 case 'syncPlayback':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->syncPlayback($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->syncPlayback((int)$identity['actor_id'], $body);
                     break;
                 case 'addTrackToPool':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->addTrackToPool($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->addTrackToPool((int)$identity['actor_id'], $body);
                     break;
                 case 'removeTrackFromPool':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->removeTrackFromPool($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->removeTrackFromPool((int)$identity['actor_id'], $body);
                     break;
                 case 'startRound':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->startRound($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->startRound((int)$identity['actor_id'], $body);
                     break;
                 case 'revealRound':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->revealRound($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->revealRound((int)$identity['actor_id'], $body);
                     break;
                 case 'finishRound':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->finishRound($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->finishRound((int)$identity['actor_id'], $body);
                     break;
                 case 'voteNextRound':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->voteNextRound($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->voteNextRound((int)$identity['actor_id'], $body);
                     break;
                 case 'voteRevealRound':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->voteRevealRound($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->voteRevealRound((int)$identity['actor_id'], $body);
                     break;
                 case 'submitAnswer':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->submitAnswer($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->submitAnswer((int)$identity['actor_id'], $body);
                     break;
                 case 'holdSuggestion':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->holdSuggestion($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->holdSuggestion((int)$identity['actor_id'], $body);
                     break;
                 case 'releaseSuggestionHold':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->releaseSuggestionHold($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->releaseSuggestionHold((int)$identity['actor_id'], $body);
                     break;
                 case 'submitSuggestion':
-                    $userId = AuthMiddleware::optional();
-                    $suggestionController->submit($userId, $body);
+                    $identity = PlayerMiddleware::optional(false);
+                    $suggestionController->submit($identity !== null ? (int)$identity['actor_id'] : null, $body);
                     break;
                 case 'createTvPairing':
                     $tvController->createPairing();
                     break;
                 case 'linkTvPairing':
-                    $userId = AuthMiddleware::check();
-                    $tvController->linkPairing($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $tvController->linkPairing((int)$identity['actor_id'], $body);
                     break;
                 case 'createCategory':
                     $userId = AuthMiddleware::check();
@@ -237,8 +248,8 @@ try {
         case 'PUT':
             switch ($action) {
                 case 'updateLobbyConfig':
-                    $userId = AuthMiddleware::check();
-                    $lobbyController->updateConfig($userId, $body);
+                    $identity = PlayerMiddleware::check($body['guest_nickname'] ?? null);
+                    $lobbyController->updateConfig((int)$identity['actor_id'], $body);
                     break;
                 case 'updateCategory':
                     $userId = AuthMiddleware::check();

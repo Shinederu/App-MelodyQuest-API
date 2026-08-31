@@ -61,14 +61,14 @@ class AdminInsightsService
                     SUM(CASE WHEN insight.score_awarded > 0 THEN 1 ELSE 0 END) AS scored_count,
                     SUM(CASE WHEN insight.source = "live" THEN 1 ELSE 0 END) AS live_count,
                     SUM(CASE WHEN insight.source = "history" THEN 1 ELSE 0 END) AS history_count,
-                    COUNT(DISTINCT insight.user_id) AS user_count,
+                    COUNT(DISTINCT insight.actor_id) AS user_count,
                     COUNT(DISTINCT insight.track_id) AS track_count,
                     MAX(insight.attempted_at) AS last_at,
                     MAX(insight.family_id) AS family_id,
                     MIN(insight.family_name) AS family_name,
                     MAX(insight.category_id) AS category_id,
                     MIN(insight.category_name) AS category_name,
-                    GROUP_CONCAT(DISTINCT insight.user_id ORDER BY insight.user_id SEPARATOR ",") AS user_ids,
+                    GROUP_CONCAT(DISTINCT insight.actor_id ORDER BY insight.actor_id SEPARATOR ",") AS user_ids,
                     GROUP_CONCAT(DISTINCT insight.track_id ORDER BY insight.track_id SEPARATOR ",") AS track_ids,
                     GROUP_CONCAT(DISTINCT insight.track_title ORDER BY insight.track_title SEPARATOR " || ") AS track_titles,
                     GROUP_CONCAT(DISTINCT insight.username ORDER BY insight.username SEPARATOR ", ") AS usernames
@@ -112,8 +112,9 @@ class AdminInsightsService
                     "live" AS source,
                     answer_attempt.id AS source_attempt_id,
                     answer_attempt.round_id,
+                    answer_attempt.actor_id,
                     answer_attempt.user_id,
-                    COALESCE(user.username, "Utilisateur supprimé") AS username,
+                    COALESCE(NULLIF(lobby_player.display_name_snapshot, ""), user.username, "Invité") AS username,
                     CASE
                       WHEN LOWER(TRIM(COALESCE(answer_attempt.guess_title, ""))) = LOWER(TRIM(COALESCE(answer_attempt.guess_artist, "")))
                         THEN TRIM(COALESCE(answer_attempt.guess_title, answer_attempt.guess_artist, ""))
@@ -140,6 +141,9 @@ class AdminInsightsService
                 JOIN mq_families family ON family.id = track.family_id
                 JOIN mq_categories category ON category.id = family.category_id
                 LEFT JOIN users user ON user.id = answer_attempt.user_id
+                LEFT JOIN mq_lobby_players lobby_player
+                  ON lobby_player.lobby_id = round.lobby_id
+                 AND lobby_player.actor_id = answer_attempt.actor_id
                 LEFT JOIN mq_lobbies lobby ON lobby.id = round.lobby_id
                 LEFT JOIN mq_game_session_answer_attempts history_copy
                   ON history_copy.source_attempt_id = answer_attempt.id
@@ -153,6 +157,7 @@ class AdminInsightsService
                     "history" AS source,
                     history_attempt.source_attempt_id,
                     history_round.source_round_id AS round_id,
+                    history_attempt.actor_id,
                     history_attempt.user_id,
                     history_attempt.username_snapshot AS username,
                     CASE

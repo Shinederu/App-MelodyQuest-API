@@ -18,22 +18,26 @@ class LobbyController
         $this->outbox = new RealtimeOutboxService(null, $this->mercure);
     }
 
-    public function create(int $userId, array $payload): void
+    public function create(array $identity, array $payload): void
     {
-        $data = $this->service->createLobby($userId, $payload);
+        $data = $this->service->createLobby((int)$identity['actor_id'], $payload);
+        $data['identity'] = $identity;
+        $data['current_actor_id'] = (int)$identity['actor_id'];
         $data = $this->attachLobbyRealtime($data);
         $this->outbox->queueLobbySnapshot((int)($data['lobby']['id'] ?? 0), true);
         json_success('Lobby créé', $data, 201);
     }
 
-    public function join(int $userId, array $payload): void
+    public function join(array $identity, array $payload): void
     {
         $code = (string)($payload['lobby_code'] ?? '');
         if ($code === '') {
             json_error('lobby_code requis', 400);
         }
 
-        $data = $this->service->joinLobby($userId, $code);
+        $data = $this->service->joinLobby((int)$identity['actor_id'], $code);
+        $data['identity'] = $identity;
+        $data['current_actor_id'] = (int)$identity['actor_id'];
         $data = $this->attachLobbyRealtime($data);
         $this->outbox->queueLobbySnapshot((int)($data['lobby']['id'] ?? 0), true);
         json_success('Lobby rejoint', $data);
@@ -59,8 +63,10 @@ class LobbyController
         }
 
         $presenceStatus = (string)($payload['presence_status'] ?? 'active');
-        $targetUserId = isset($payload['target_user_id']) ? (int)$payload['target_user_id'] : null;
-        $data = $this->service->touchLobbyPresence($userId, $lobbyId, $presenceStatus, $targetUserId);
+        $targetActorId = isset($payload['target_actor_id'])
+            ? (int)$payload['target_actor_id']
+            : (isset($payload['target_user_id']) ? (int)$payload['target_user_id'] : null);
+        $data = $this->service->touchLobbyPresence($userId, $lobbyId, $presenceStatus, $targetActorId);
         $this->refreshLobbyRealtimeAuthorization($lobbyId);
         if (!empty($data['changed'])) {
             $this->outbox->queueLobbySnapshot($lobbyId, true);
@@ -71,12 +77,12 @@ class LobbyController
     public function kickPlayer(int $userId, array $payload): void
     {
         $lobbyId = (int)($payload['lobby_id'] ?? 0);
-        $targetUserId = (int)($payload['target_user_id'] ?? 0);
-        if ($lobbyId <= 0 || $targetUserId <= 0) {
-            json_error('lobby_id et target_user_id requis', 400);
+        $targetActorId = (int)($payload['target_actor_id'] ?? $payload['target_user_id'] ?? 0);
+        if ($lobbyId <= 0 || $targetActorId === 0) {
+            json_error('lobby_id et target_actor_id requis', 400);
         }
 
-        $data = $this->service->kickPlayer($userId, $lobbyId, $targetUserId);
+        $data = $this->service->kickPlayer($userId, $lobbyId, $targetActorId);
         $data = $this->attachLobbyRealtime($data);
         $this->outbox->queueLobbySnapshot($lobbyId, true);
         json_success('Joueur exclu', $data);

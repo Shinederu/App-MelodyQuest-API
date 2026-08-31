@@ -59,7 +59,7 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $stmt = $this->db->prepare(
             'SELECT l.*,
-                    owner.username AS owner_username,
+                    COALESCE(NULLIF(owner_player.display_name_snapshot, ""), owner.username, "Invité") AS owner_username,
                     (SELECT COUNT(*) FROM mq_rounds r WHERE r.lobby_id = l.id) AS rounds_count,
                     (SELECT MAX(r.id) FROM mq_rounds r WHERE r.lobby_id = l.id) AS source_last_round_id,
                     (SELECT MIN(r.started_at) FROM mq_rounds r WHERE r.lobby_id = l.id) AS first_round_started_at,
@@ -67,7 +67,10 @@ final class PdoGameSessionRepository implements GameSessionRepository
                      FROM mq_rounds r
                      WHERE r.lobby_id = l.id) AS last_round_activity_at
              FROM mq_lobbies l
-             JOIN users owner ON owner.id = l.owner_user_id
+             JOIN mq_lobby_players owner_player
+               ON owner_player.lobby_id = l.id
+              AND owner_player.actor_id = l.owner_actor_id
+             LEFT JOIN users owner ON owner.id = owner_player.user_id
              WHERE l.id = :lobby_id
              LIMIT 1'
         );
@@ -109,11 +112,11 @@ final class PdoGameSessionRepository implements GameSessionRepository
 
         $stmt = $this->db->prepare(
             'INSERT INTO mq_game_sessions
-                (source_lobby_id, source_last_round_id, lobby_code, lobby_name, owner_user_id,
+                (source_lobby_id, source_last_round_id, lobby_code, lobby_name, owner_user_id, owner_actor_id, owner_is_guest,
                  owner_username_snapshot, game_mode, completion_status, config_snapshot,
                  started_at, finished_at, archived_at)
              VALUES
-                (:source_lobby_id, :source_last_round_id, :lobby_code, :lobby_name, :owner_user_id,
+                (:source_lobby_id, :source_last_round_id, :lobby_code, :lobby_name, :owner_user_id, :owner_actor_id, :owner_is_guest,
                  :owner_username_snapshot, :game_mode, :completion_status, :config_snapshot,
                  :started_at, :finished_at, NOW(3))'
         );
@@ -122,7 +125,9 @@ final class PdoGameSessionRepository implements GameSessionRepository
             'source_last_round_id' => (int)$source['source_last_round_id'],
             'lobby_code' => strtoupper(trim((string)$source['lobby_code'])),
             'lobby_name' => trim((string)$source['name']),
-            'owner_user_id' => (int)$source['owner_user_id'],
+            'owner_user_id' => !empty($source['owner_user_id']) ? (int)$source['owner_user_id'] : null,
+            'owner_actor_id' => (int)$source['owner_actor_id'],
+            'owner_is_guest' => (int)$source['owner_actor_id'] < 0 ? 1 : 0,
             'owner_username_snapshot' => (string)$source['owner_username'],
             'game_mode' => (string)($source['game_mode'] ?? 'participative'),
             'completion_status' => $completionStatus,
@@ -157,12 +162,13 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $stmt = $this->db->prepare(
             'INSERT INTO mq_game_session_players
-                (game_session_id, user_id, username_snapshot, lobby_role, final_score,
+                (game_session_id, user_id, actor_id, is_guest, username_snapshot, lobby_role, final_score,
                  presence_status, joined_at, removed_at)
-             SELECT :session_id, lp.user_id, u.username, lp.role, lp.score,
+             SELECT :session_id, lp.user_id, lp.actor_id, IF(lp.actor_id < 0, 1, 0),
+                    COALESCE(NULLIF(lp.display_name_snapshot, ""), u.username, "Invité"), lp.role, lp.score,
                     lp.presence_status, lp.joined_at, lp.removed_at
              FROM mq_lobby_players lp
-             JOIN users u ON u.id = lp.user_id
+             LEFT JOIN users u ON u.id = lp.user_id
              WHERE lp.lobby_id = :lobby_id'
         );
         $stmt->execute(['session_id' => $sessionId, 'lobby_id' => $lobbyId]);
@@ -192,15 +198,19 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $stmt = $this->db->prepare(
             'INSERT INTO mq_game_session_answers
-                (game_session_round_id, source_answer_id, user_id, username_snapshot,
+                (game_session_round_id, source_answer_id, user_id, actor_id, username_snapshot,
                  guess_title, guess_artist, is_correct_title, is_correct_artist,
                  score_awarded, answered_at)
-             SELECT history_round.id, answer.id, answer.user_id,
-                    COALESCE(u.username, CONCAT("Utilisateur #", answer.user_id)),
+             SELECT history_round.id, answer.id, answer.user_id, answer.actor_id,
+                    COALESCE(NULLIF(lp.display_name_snapshot, ""), u.username, "Invité"),
                     answer.guess_title, answer.guess_artist, answer.is_correct_title, answer.is_correct_artist,
                     answer.score_awarded, answer.answered_at
              FROM mq_game_session_rounds history_round
              JOIN mq_round_answers answer ON answer.round_id = history_round.source_round_id
+             JOIN mq_rounds live_round ON live_round.id = answer.round_id
+             LEFT JOIN mq_lobby_players lp
+               ON lp.lobby_id = live_round.lobby_id
+              AND lp.actor_id = answer.actor_id
              LEFT JOIN users u ON u.id = answer.user_id
              WHERE history_round.game_session_id = :session_id'
         );
@@ -211,14 +221,18 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $stmt = $this->db->prepare(
             'INSERT INTO mq_game_session_answer_attempts
-                (game_session_round_id, source_attempt_id, user_id, username_snapshot,
+                (game_session_round_id, source_attempt_id, user_id, actor_id, username_snapshot,
                  guess_title, guess_artist, is_correct, score_awarded, attempted_at)
-             SELECT history_round.id, attempt.id, attempt.user_id,
-                    COALESCE(u.username, CONCAT("Utilisateur #", attempt.user_id)),
+             SELECT history_round.id, attempt.id, attempt.user_id, attempt.actor_id,
+                    COALESCE(NULLIF(lp.display_name_snapshot, ""), u.username, "Invité"),
                     attempt.guess_title, attempt.guess_artist, attempt.is_correct,
                     attempt.score_awarded, attempt.created_at
              FROM mq_game_session_rounds history_round
              JOIN mq_round_answer_attempts attempt ON attempt.round_id = history_round.source_round_id
+             JOIN mq_rounds live_round ON live_round.id = attempt.round_id
+             LEFT JOIN mq_lobby_players lp
+               ON lp.lobby_id = live_round.lobby_id
+              AND lp.actor_id = attempt.actor_id
              LEFT JOIN users u ON u.id = attempt.user_id
              WHERE history_round.game_session_id = :session_id'
         );
@@ -229,11 +243,15 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $stmt = $this->db->prepare(
             'INSERT INTO mq_game_session_reveal_votes
-                (game_session_round_id, user_id, username_snapshot, voted_at)
-             SELECT history_round.id, vote.user_id,
-                    COALESCE(u.username, CONCAT("Utilisateur #", vote.user_id)), vote.voted_at
+                (game_session_round_id, user_id, actor_id, username_snapshot, voted_at)
+             SELECT history_round.id, vote.user_id, vote.actor_id,
+                    COALESCE(NULLIF(lp.display_name_snapshot, ""), u.username, "Invité"), vote.voted_at
              FROM mq_game_session_rounds history_round
              JOIN mq_round_reveal_votes vote ON vote.round_id = history_round.source_round_id
+             JOIN mq_rounds live_round ON live_round.id = vote.round_id
+             LEFT JOIN mq_lobby_players lp
+               ON lp.lobby_id = live_round.lobby_id
+              AND lp.actor_id = vote.actor_id
              LEFT JOIN users u ON u.id = vote.user_id
              WHERE history_round.game_session_id = :session_id'
         );
@@ -244,15 +262,22 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $stmt = $this->db->prepare(
             'INSERT INTO mq_game_session_away_bonuses
-                (game_session_round_id, user_id, username_snapshot, source_user_id,
+                (game_session_round_id, user_id, actor_id, username_snapshot, source_user_id, source_actor_id,
                  source_username_snapshot, score_awarded, awarded_at)
-             SELECT history_round.id, bonus.user_id,
-                    COALESCE(target.username, CONCAT("Utilisateur #", bonus.user_id)),
-                    bonus.source_user_id,
-                    COALESCE(source_user.username, CONCAT("Utilisateur #", bonus.source_user_id)),
+             SELECT history_round.id, bonus.user_id, bonus.actor_id,
+                    COALESCE(NULLIF(target_player.display_name_snapshot, ""), target.username, "Invité"),
+                    bonus.source_user_id, bonus.source_actor_id,
+                    COALESCE(NULLIF(source_player.display_name_snapshot, ""), source_user.username, "Invité"),
                     bonus.score_awarded, bonus.awarded_at
              FROM mq_game_session_rounds history_round
              JOIN mq_round_away_bonuses bonus ON bonus.round_id = history_round.source_round_id
+             JOIN mq_rounds live_round ON live_round.id = bonus.round_id
+             LEFT JOIN mq_lobby_players target_player
+               ON target_player.lobby_id = live_round.lobby_id
+              AND target_player.actor_id = bonus.actor_id
+             LEFT JOIN mq_lobby_players source_player
+               ON source_player.lobby_id = live_round.lobby_id
+              AND source_player.actor_id = bonus.source_actor_id
              LEFT JOIN users target ON target.id = bonus.user_id
              LEFT JOIN users source_user ON source_user.id = bonus.source_user_id
              WHERE history_round.game_session_id = :session_id'
@@ -264,13 +289,15 @@ final class PdoGameSessionRepository implements GameSessionRepository
     {
         $participants = $this->db->prepare(
             'INSERT IGNORE INTO mq_game_session_players
-                (game_session_id, user_id, username_snapshot, lobby_role, final_score,
+                (game_session_id, user_id, actor_id, is_guest, username_snapshot, lobby_role, final_score,
                  presence_status, joined_at, removed_at)
              SELECT participant.game_session_id,
                     participant.user_id,
+                    participant.actor_id,
+                    IF(participant.actor_id < 0, 1, 0),
                     participant.username_snapshot,
                     CASE
-                        WHEN participant.user_id = game_session.owner_user_id THEN "owner"
+                        WHEN participant.actor_id = game_session.owner_actor_id THEN "owner"
                         ELSE "player"
                     END,
                     participant.final_score,
@@ -281,12 +308,14 @@ final class PdoGameSessionRepository implements GameSessionRepository
              JOIN (
                  SELECT activity.game_session_id,
                         activity.user_id,
+                        activity.actor_id,
                         MAX(activity.username_snapshot) AS username_snapshot,
                         SUM(activity.score_awarded) AS final_score,
                         MIN(activity.activity_at) AS first_activity_at
                  FROM (
                      SELECT history_round.game_session_id,
                             answer.user_id,
+                            answer.actor_id,
                             answer.username_snapshot,
                             answer.score_awarded,
                             answer.answered_at AS activity_at
@@ -299,6 +328,7 @@ final class PdoGameSessionRepository implements GameSessionRepository
 
                      SELECT history_round.game_session_id,
                             attempt.user_id,
+                            attempt.actor_id,
                             attempt.username_snapshot,
                             0 AS score_awarded,
                             attempt.attempted_at AS activity_at
@@ -311,6 +341,7 @@ final class PdoGameSessionRepository implements GameSessionRepository
 
                      SELECT history_round.game_session_id,
                             vote.user_id,
+                            vote.actor_id,
                             vote.username_snapshot,
                             0 AS score_awarded,
                             vote.voted_at AS activity_at
@@ -323,6 +354,7 @@ final class PdoGameSessionRepository implements GameSessionRepository
 
                      SELECT history_round.game_session_id,
                             bonus.user_id,
+                            bonus.actor_id,
                             bonus.username_snapshot,
                             bonus.score_awarded,
                             bonus.awarded_at AS activity_at
@@ -335,6 +367,7 @@ final class PdoGameSessionRepository implements GameSessionRepository
 
                      SELECT history_round.game_session_id,
                             bonus.source_user_id AS user_id,
+                            bonus.source_actor_id AS actor_id,
                             bonus.source_username_snapshot AS username_snapshot,
                             0 AS score_awarded,
                             bonus.awarded_at AS activity_at
@@ -343,7 +376,7 @@ final class PdoGameSessionRepository implements GameSessionRepository
                        ON history_round.id = bonus.game_session_round_id
                      WHERE history_round.game_session_id = :session_bonus_source
                  ) activity
-                 GROUP BY activity.game_session_id, activity.user_id
+                 GROUP BY activity.game_session_id, activity.actor_id, activity.user_id
              ) participant ON participant.game_session_id = game_session.id
              WHERE game_session.id = :session_id'
         );
@@ -358,9 +391,9 @@ final class PdoGameSessionRepository implements GameSessionRepository
 
         $owner = $this->db->prepare(
             'INSERT IGNORE INTO mq_game_session_players
-                (game_session_id, user_id, username_snapshot, lobby_role, final_score,
+                (game_session_id, user_id, actor_id, is_guest, username_snapshot, lobby_role, final_score,
                  presence_status, joined_at, removed_at)
-             SELECT id, owner_user_id, owner_username_snapshot, "owner", 0,
+             SELECT id, owner_user_id, owner_actor_id, owner_is_guest, owner_username_snapshot, "owner", 0,
                     "unknown", started_at, NULL
              FROM mq_game_sessions
              WHERE id = :session_id'
