@@ -37,4 +37,3 @@ EXECUTE mq_stmt;
 DEALLOCATE PREPARE mq_stmt;
 
 ALTER TABLE mq_lobbies ALTER COLUMN total_rounds SET DEFAULT 30, ALTER COLUMN round_duration_seconds SET DEFAULT 20;
-
