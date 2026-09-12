@@ -644,6 +644,7 @@ class LobbyService
             throw new RuntimeException('Aucune manche en cours');
         }
 
+        if (!empty($round['unavailable_skip_at'])) throw new RuntimeException('Le passage de la vidéo indisponible est en cours');
         if ($this->isRoundWaitingToStart($round)) {
             throw new RuntimeException('La manche n\'a pas encore commencé');
         }
@@ -666,6 +667,7 @@ class LobbyService
             throw new RuntimeException('Aucune manche en cours');
         }
 
+        if (!empty($round['unavailable_skip_at'])) throw new RuntimeException('Le passage de la vidéo indisponible est en cours');
         $upd = $this->db->prepare(
             'UPDATE mq_rounds
              SET status = "finished",
@@ -1085,6 +1087,85 @@ class LobbyService
             throw new RuntimeException('Lobby introuvable');
         }
         return $row;
+    }
+
+    private function authorizePlaybackReporter(?int $actorId, string $deviceToken, int $lobbyId, array $lobby): bool
+    {
+        if ($deviceToken !== '') {
+            if (!preg_match('/^[a-f0-9]{64}$/', $deviceToken)) throw new RuntimeException('Session TV invalide');
+            $stmt = $this->db->prepare('SELECT 1 FROM mq_tv_pairings WHERE device_token=:token AND lobby_id=:lobby AND status="linked" AND expires_at>NOW(3)');
+            $stmt->execute(['token' => $deviceToken, 'lobby' => $lobbyId]);
+            if (!$stmt->fetchColumn()) throw new RuntimeException('TV non liée à ce salon');
+            return true;
+        }
+        if (!$actorId) throw new RuntimeException('Rejoins un salon avant de signaler sa vidéo');
+        $this->requireLobbyMember($lobbyId, $actorId);
+        return (int)($lobby['owner_actor_id'] ?? $lobby['owner_user_id']) === $actorId;
+    }
+
+    public function reportPlaybackError(?int $actorId, array $payload): array
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        $errorCode = $payload['error_code'] ?? null;
+        if (!in_array($errorCode, [100, 101, 150], true)) throw new RuntimeException('Cette erreur ne confirme pas une vidéo indisponible');
+        $this->db->beginTransaction();
+        try {
+            $lobby = $this->requireLobbyForUpdate($lobbyId);
+            $canSkip = $this->authorizePlaybackReporter($actorId, (string)($payload['device_token'] ?? ''), $lobbyId, $lobby);
+            if ($lobby['status'] !== 'playing') throw new RuntimeException('Aucune partie en cours');
+            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
+            if (!$round || (int)$round['id'] !== (int)($payload['round_id'] ?? 0)) throw new RuntimeException('Cette manche n’est plus en cours');
+            $track = $this->getTrackSnapshotById((int)$round['track_id']);
+            if (!$track || (string)$track['youtube_video_id'] !== (string)($payload['youtube_video_id'] ?? '')) throw new RuntimeException('La vidéo ne correspond pas à la manche');
+            require_once __DIR__ . '/SuggestionService.php';
+            $report = (new SuggestionService())->reportUnavailable($round, $errorCode);
+            if ($canSkip && empty($round['unavailable_skip_at'])) {
+                $this->db->prepare('UPDATE mq_rounds SET unavailable_skip_at=DATE_ADD(NOW(3), INTERVAL 6 SECOND) WHERE id=:id')->execute(['id' => $round['id']]);
+                $this->db->prepare('UPDATE mq_lobbies SET sync_revision=sync_revision+1 WHERE id=:id')->execute(['id' => $lobbyId]);
+            }
+            $this->db->commit();
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            throw $e;
+        }
+        if ($report['created']) ModerationNotificationService::queue('suggestion', $report['id']);
+        return ['reported' => true, 'skip_scheduled' => $canSkip || !empty($round['unavailable_skip_at'])];
+    }
+
+    public function advanceUnavailableRound(?int $actorId, array $payload): array
+    {
+        $lobbyId = (int)($payload['lobby_id'] ?? 0);
+        $this->db->beginTransaction();
+        try {
+            $lobby = $this->requireLobbyForUpdate($lobbyId);
+            $this->authorizePlaybackReporter($actorId, (string)($payload['device_token'] ?? ''), $lobbyId, $lobby);
+            $round = $this->getCurrentRoundRowForUpdate($lobbyId);
+            if (!$round || (int)$round['id'] !== (int)($payload['round_id'] ?? 0)) {
+                $this->db->commit();
+                return ['advanced' => false, 'stale' => true];
+            }
+            $due = !empty($round['unavailable_skip_at']) && (float)$round['unavailable_skip_at_unix'] <= microtime(true);
+            if (!$due || $this->countActiveSuggestionHolds((int)$round['id']) > 0) {
+                $this->db->commit();
+                return ['advanced' => false];
+            }
+            $this->db->prepare('UPDATE mq_rounds SET status="finished", ended_at=NOW(3) WHERE id=:id')->execute(['id' => $round['id']]);
+            $this->resetLobbyReadyVotes($lobbyId);
+            $total = $this->validateTotalRoundsValue($lobby['total_rounds']);
+            if ($this->countFinishedRounds($lobbyId) >= $total) {
+                $this->db->prepare('UPDATE mq_lobbies SET status="finished", playback_state="stopped", current_track_id=NULL, playback_started_at=NULL, playback_offset_seconds=0, sync_revision=sync_revision+1 WHERE id=:id')->execute(['id' => $lobbyId]);
+            } else {
+                $next = (int)$round['round_number'] + 1;
+                $trackId = $this->consumeRoundPreloadLocked($lobbyId, $next) ?? $this->pickTrackForLobby($lobbyId);
+                $this->createRunningRoundLocked($lobbyId, $trackId, $next);
+                $this->ensureUpcomingRoundPreloadsLocked($lobbyId, $next + 1, $total);
+            }
+            $this->db->commit();
+            return ['advanced' => true];
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            throw $e;
+        }
     }
 
     public function getRoundState(int $userId, int $lobbyId): array
@@ -1661,7 +1742,8 @@ class LobbyService
             'SELECT r.*,
                     COALESCE(UNIX_TIMESTAMP(r.started_at), 0) AS started_at_unix,
                     COALESCE(UNIX_TIMESTAMP(r.reveal_started_at), 0) AS reveal_started_at_unix,
-                    COALESCE(UNIX_TIMESTAMP(r.ended_at), 0) AS ended_at_unix
+                    COALESCE(UNIX_TIMESTAMP(r.ended_at), 0) AS ended_at_unix,
+                    UNIX_TIMESTAMP(r.unavailable_skip_at) AS unavailable_skip_at_unix
              FROM mq_rounds r
              WHERE lobby_id = :lobby_id
                AND status IN ("running", "reveal")
@@ -1679,7 +1761,8 @@ class LobbyService
             'SELECT r.*,
                     COALESCE(UNIX_TIMESTAMP(r.started_at), 0) AS started_at_unix,
                     COALESCE(UNIX_TIMESTAMP(r.reveal_started_at), 0) AS reveal_started_at_unix,
-                    COALESCE(UNIX_TIMESTAMP(r.ended_at), 0) AS ended_at_unix
+                    COALESCE(UNIX_TIMESTAMP(r.ended_at), 0) AS ended_at_unix,
+                    UNIX_TIMESTAMP(r.unavailable_skip_at) AS unavailable_skip_at_unix
              FROM mq_rounds r
              WHERE lobby_id = :lobby_id
                AND status IN ("running", "reveal")
@@ -2554,6 +2637,7 @@ class LobbyService
 
     private function isRoundAnswerWindowOpen(array $lobby, array $round): bool
     {
+        if (!empty($round['unavailable_skip_at'])) return false;
         $status = strtolower((string)($round['status'] ?? ''));
         if ($status !== 'running') {
             return false;
@@ -2574,6 +2658,7 @@ class LobbyService
 
     private function isNextVoteWindowOpen(array $lobby, array $round): bool
     {
+        if (!empty($round['unavailable_skip_at'])) return false;
         return microtime(true) >= $this->getNextVoteAvailableTimestamp($lobby, $round);
     }
 
@@ -2993,7 +3078,7 @@ class LobbyService
         $nextVoteAt = $this->getNextVoteAvailableTimestamp($lobby, $round);
         $isAcceptingAnswers = $this->isRoundAnswerWindowOpen($lobby, $round);
         $isWaitingToStart = $this->isRoundWaitingToStart($round);
-        $isRevealVisible = (!$isWaitingToStart && !$isAcceptingAnswers) || strtolower((string)($round['status'] ?? '')) === 'reveal';
+        $isRevealVisible = empty($round['unavailable_skip_at']) && ((!$isWaitingToStart && !$isAcceptingAnswers) || strtolower((string)($round['status'] ?? '')) === 'reveal');
         $includeSolution = $isRevealVisible || $viewerSolved;
         $showTrackCategory = !empty($lobby['show_track_category']);
         $this->cleanupExpiredSuggestionHolds();
@@ -3005,6 +3090,7 @@ class LobbyService
                 'lobby_id' => (int)$round['lobby_id'],
                 'round_number' => (int)$round['round_number'],
                 'status' => $round['status'],
+                'unavailable_skip_at_unix' => empty($round['unavailable_skip_at']) ? null : (float)$round['unavailable_skip_at_unix'],
                 'started_at' => $round['started_at'],
                 'started_at_unix' => $this->resolveRoundTimestamp($round, 'started_at'),
                 'reveal_started_at' => $round['reveal_started_at'],

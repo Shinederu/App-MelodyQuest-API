@@ -80,6 +80,7 @@ Ne pas deployer en PROD:
 - Les essais de reponse actifs et archives sont reunis sans doublon pour admin/statistiques.
 - L'analyse admin regroupe les fautes proches par oeuvre, remonte les alias recurrents et distingue les idees de contenu.
 - Les suggestions joueurs peuvent etre editees, refusees, marquees traitees ou appliquees directement au catalogue.
+- Les demandes de suppression exigent un motif et une confirmation admin explicite; les signalements automatiques de videos indisponibles ne suppriment ni ne desactivent une piste.
 - Les pistes ont des bornes debut/fin en secondes et une note de notoriété optionnelle de 1 a 10.
 - Le lobby peut filtrer par notoriété minimale; toutes les pistes restent eligibles par defaut.
 - Une nouvelle musique a valider ou proposition declenche une notification best-effort a `contact@shinederu.ch`.
@@ -146,6 +147,7 @@ Migrations:
 - `019_melodyquest_realtime_outbox.sql`: file durable et coalescee des snapshots Mercure.
 - `020_melodyquest_guest_players.sql`: sessions invitees, namespace `actor_id` et attribution anonyme de l'historique.
 - `021_melodyquest_track_preferences.sql`: notoriété des pistes, seuil des salons, oeuvre/timestamps des propositions et defauts 30/20. Ajouts idempotents, aucune suppression; les bornes de `mq_tracks` existaient deja.
+- `022_melodyquest_playback_reports.sql`: types `track_removal` / `video_unavailable`, cle unique des signalements en attente et echeance `mq_rounds.unavailable_skip_at`. Aucune suppression de donnees; a appliquer avant le nouveau runtime.
 
 Regles DB:
 
@@ -315,11 +317,33 @@ Details importants:
 - `voteRevealRound` demande 100% des joueurs actifs, refuse si l'option est desactivee, si quelqu'un a deja trouve, ou si la reponse est deja revelee.
 - `voteNextRound` demande 50% des joueurs actifs apres revelation et refuse tant qu'un verrou de suggestion est actif.
 - `holdSuggestion` bloque temporairement le passage a la manche suivante pendant qu'un joueur propose une correction.
-- `submitSuggestion` accepte `track_correction` depuis une partie compte/invite et `new_track` depuis la page publique.
+- `submitSuggestion` accepte `track_correction` ou `track_removal` depuis une partie compte/invite et `new_track` depuis la page publique. `track_removal` requiert un `note` non vide; `applySuggestion` exige `confirm_removal: true` (booleen strict) avant suppression et refuse une piste encore referencee par une manche.
 - Une correction accepte soit `proposed_alias`, soit `proposed_family_name` (nom de l'oeuvre a deviner), ainsi que `proposed_title`, `proposed_artist`, `proposed_youtube_url`, `proposed_start_offset_seconds` et `proposed_end_offset_seconds`.
 - Les timestamps sont des secondes entieres entre 0 et 86400, avec fin strictement apres debut. Une proposition vide laisse les valeurs actuelles; `0` est une proposition de debut valide.
 - `submitSuggestion` limite l'abus a 5 suggestions par 10 minutes et par acteur/IP.
 - `submitAnswer` utilise `answer_similarity_threshold` avec similarite hybride et garde-fous sur reponses courtes.
+
+## Signalements de lecture
+
+- `POST action=reportPlaybackError`: `lobby_id`, `round_id`, `youtube_video_id`,
+  `error_code` entier 100/101/150. Identite membre compte/invite, ou `device_token`
+  d'une TV actuellement liee au meme salon. Aucun appel anonyme sans jeton valide.
+- La video doit correspondre a la manche courante d'une partie en cours.
+  Les erreurs 2/5/153 et le buffering ne sont pas des preuves de suppression.
+- Une suggestion `video_unavailable` en attente par video via `automatic_report_key`
+  unique; une seule notification best-effort a sa creation. La cle est liberee
+  lorsque le signalement est traite, refuse ou applique. Le catalogue ne change pas.
+- Seul le createur ou une TV liee programme `unavailable_skip_at`, a NOW(3)+6s.
+  Un membre ordinaire peut signaler sans interrompre les autres appareils.
+- `POST action=advanceUnavailableRound`: `lobby_id`, `round_id`, meme authentification.
+  Verrouille salon/manche, attend l'echeance et la fin des verrous de proposition,
+  puis termine la manche et cree la suivante (ou termine la partie).
+  Reponse `advanced`, et `stale` si la manche n'est plus courante; appels idempotents.
+- Les transitions utilisent l'outbox Mercure existante. L'echeance du snapshot
+  `round.unavailable_skip_at_unix` est calculee par UNIX_TIMESTAMP MySQL, sans
+  reinterpreter le fuseau horaire en PHP. Pas de nouveau timer/worker serveur.
+- Les points deja attribues et l'historique sont conserves. Aucun changement
+  de synchronisation saine, de prechargement ou de qualite YouTube.
 
 ## Round state
 
@@ -536,7 +560,7 @@ Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
 
 Tests d'integration opt-in: `php tests/integration.php --local-fixture`.
 Ils utilisent uniquement `mq_ui_test` sur `127.0.0.1:33307` avec un MySQL jetable,
-les migrations 001..021 et deux comptes fixture 1/2. Ils ne lisent pas la DB
+les migrations 001..022 et deux comptes fixture 1/2. Ils ne lisent pas la DB
 partagee. Couverture: defauts, moderation des invites, conservation des scores,
 filtre musical, application des corrections et liaison TV apres une partie.
 
@@ -546,7 +570,7 @@ Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.
 
 Pour cette version, respecter cet ordre afin d'eviter un contrat mixte:
 
-1. verifier les migrations jusqu'a `020`, puis appliquer `sql\021_melodyquest_track_preferences.sql` sur `ShinedeCore`;
+1. verifier les migrations jusqu'a `021`, puis appliquer `sql\022_melodyquest_playback_reports.sql` sur `ShinedeCore`;
 2. deployer immediatement le runtime API;
 3. deployer ensuite le frontend `20260912-game-ui-v2`;
 4. verifier un compte existant, les invites, les filtres et une proposition; ne pas envoyer de fausses propositions dans le catalogue live pour les tests automatises.

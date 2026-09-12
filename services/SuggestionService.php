@@ -25,13 +25,13 @@ class SuggestionService
             : null;
 
         $type = (string)($payload['suggestion_type'] ?? 'track_correction');
-        if (!in_array($type, ['track_correction', 'new_track'], true)) {
+        if (!in_array($type, ['track_correction', 'new_track', 'track_removal'], true)) {
             throw new RuntimeException('Type de suggestion invalide');
         }
 
         $track = null;
         $trackId = (int)($payload['track_id'] ?? 0);
-        if ($type === 'track_correction') {
+        if ($type !== 'new_track') {
             if ($trackId <= 0) {
                 throw new RuntimeException('track_id requis pour une correction');
             }
@@ -54,6 +54,9 @@ class SuggestionService
             'end_offset_seconds' => $proposedEnd ?? $track['end_offset_seconds'] ?? null,
         ]);
         $note = $this->cleanText($payload['note'] ?? null, 2000);
+        if ($type === 'track_removal' && $note === null) {
+            throw new RuntimeException('Indique pourquoi cette musique devrait être supprimée');
+        }
         $videoId = $proposedYoutubeUrl !== null ? mq_normalize_youtube_video_id($proposedYoutubeUrl) : '';
         if ($proposedYoutubeUrl !== null && $videoId === '') {
             throw new RuntimeException('URL YouTube invalide');
@@ -106,6 +109,27 @@ class SuggestionService
         return ['id' => $id];
     }
 
+    public function reportUnavailable(array $round, int $errorCode): array
+    {
+        $track = $this->getTrackContext((int)$round['track_id']);
+        if (!$track) throw new RuntimeException('Musique introuvable');
+        $stmt = $this->db->prepare(
+            'INSERT INTO mq_player_suggestions
+             (suggestion_type, automatic_report_key, lobby_id, round_id, track_id,
+              current_title, current_artist, current_youtube_video_id, current_family_name, note)
+             VALUES ("video_unavailable", :report_key, :lobby, :round, :track, :title, :artist, :video, :family, :note)
+             ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)'
+        );
+        $stmt->execute([
+            'report_key' => hash('sha256', 'youtube:' . $track['youtube_video_id']),
+            'lobby' => (int)$round['lobby_id'], 'round' => (int)$round['id'], 'track' => (int)$round['track_id'],
+            'title' => $track['title'], 'artist' => $track['artist'],
+            'video' => $track['youtube_video_id'], 'family' => $track['family_name'],
+            'note' => 'Signalement automatique : cette vidéo n’est plus disponible sur le lecteur YouTube (erreur ' . $errorCode . '). Vérifier le lien ou le remplacer. Ce signalement ne désactive pas la musique.',
+        ]);
+        return ['id' => (int)$this->db->lastInsertId(), 'created' => $stmt->rowCount() === 1];
+    }
+
     public function list(string $status = 'pending'): array
     {
         if (!in_array($status, ['pending', 'reviewed', 'rejected', 'all'], true)) {
@@ -155,7 +179,15 @@ class SuggestionService
         $this->persistDraft($id, $draft);
 
         $catalogService = new CatalogService();
-        if ((string)$suggestion['suggestion_type'] === 'new_track') {
+        if ((string)$suggestion['suggestion_type'] === 'track_removal') {
+            if (($payload['confirm_removal'] ?? false) !== true) throw new RuntimeException('Confirmation de suppression requise');
+            $trackId = (int)($suggestion['track_id'] ?? 0);
+            $used = $this->db->prepare('SELECT 1 FROM mq_rounds WHERE track_id = :id LIMIT 1');
+            $used->execute(['id' => $trackId]);
+            if ($used->fetchColumn()) throw new RuntimeException('Cette musique est encore liée à une partie. Réessaie après la réinitialisation ou la fermeture du salon.');
+            $result = $trackId > 0 ? $catalogService->deleteTrack($trackId) : ['deleted' => 0];
+            $result['type'] = 'track_removal';
+        } elseif ((string)$suggestion['suggestion_type'] === 'new_track') {
             $result = $this->applyNewTrackSuggestion($catalogService, $reviewerUserId, $suggestion, $draft);
         } else {
             $result = $this->applyTrackCorrectionSuggestion($catalogService, $reviewerUserId, $suggestion, $draft);
@@ -168,7 +200,8 @@ class SuggestionService
                  reviewed_at = NOW(3),
                  reviewed_by_user_id = :reviewer,
                  applied_track_id = :track_id,
-                 applied_at = NOW(3)
+                 applied_at = NOW(3),
+                 automatic_report_key = NULL
              WHERE id = :id'
         );
         $stmt->execute([
@@ -198,13 +231,15 @@ class SuggestionService
             'UPDATE mq_player_suggestions
              SET status = :status,
                  reviewed_at = CASE WHEN :status_reviewed = "pending" THEN NULL ELSE NOW(3) END,
-                 reviewed_by_user_id = CASE WHEN :status_reviewer = "pending" THEN NULL ELSE :reviewer END
+                 reviewed_by_user_id = CASE WHEN :status_reviewer = "pending" THEN NULL ELSE :reviewer END,
+                 automatic_report_key = CASE WHEN :status_report = "pending" THEN automatic_report_key ELSE NULL END
              WHERE id = :id'
         );
         $stmt->execute([
             'status' => $status,
             'status_reviewed' => $status,
             'status_reviewer' => $status,
+            'status_report' => $status,
             'reviewer' => $reviewerUserId,
             'id' => $id,
         ]);

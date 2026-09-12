@@ -210,6 +210,11 @@ try {
                     AdminMiddleware::check($userId);
                     $catalogController->createTrack($userId, $body);
                     break;
+                case 'reportPlaybackError':
+                case 'advanceUnavailableRound':
+                    $identity = PlayerMiddleware::optional(false);
+                    $lobbyController->playbackFailure($identity !== null ? (int)$identity['actor_id'] : null, $body, $action === 'advanceUnavailableRound');
+                    break;
                 case 'addFamilyAlias':
                     $userId = AuthMiddleware::check();
                     AdminMiddleware::check($userId);

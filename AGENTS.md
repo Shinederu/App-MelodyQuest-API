@@ -93,6 +93,8 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - La migration `019_melodyquest_realtime_outbox.sql` doit etre appliquee avant de deployer le code d'outbox.
 - La migration `020_melodyquest_guest_players.sql` doit etre appliquee avant le runtime invite; elle ne supprime aucune donnee de jeu.
 - La migration additive `021_melodyquest_track_preferences.sql` precede le runtime notoriété/timestamps des propositions.
+- La migration additive `022_melodyquest_playback_reports.sql` precede les rapports YouTube: erreur 100/101/150 seulement, validation membre/TV et manche courante, un signalement en attente par video. Createur/TV programme six secondes; passage atomique via `advanceUnavailableRound`, respecte les verrous de proposition. Ne jamais passer une manche sur un simple buffering.
+- `track_removal` reste une demande; appliquer exige `confirm_removal === true` et conserve la protection FK des musiques utilisees. Aucun nouvel archivage/purge ni desactivation automatique.
 - Les lignes sont coalescees par flux et acquittees avec leur generation; ne pas remplacer ce mecanisme par un `publish()` synchrone dans un controleur.
 - Le drainage normal commence seulement apres `fastcgi_finish_request()`; un echec du hub ne doit pas faire echouer la commande metier.
 - `bin\process_realtime_outbox.php` est le filet CLI de reprise et peut etre supervise en mode `--loop` si necessaire.

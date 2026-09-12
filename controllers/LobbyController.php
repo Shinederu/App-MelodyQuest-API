@@ -18,6 +18,14 @@ class LobbyController
         $this->outbox = new RealtimeOutboxService(null, $this->mercure);
     }
 
+    public function playbackFailure(?int $actorId, array $payload, bool $advance = false): void
+    {
+        $data = $advance ? $this->service->advanceUnavailableRound($actorId, $payload)
+            : $this->service->reportPlaybackError($actorId, $payload);
+        if (!$advance || !empty($data['advanced'])) $this->outbox->queueLobbySnapshot((int)($payload['lobby_id'] ?? 0), true);
+        json_success(null, $data);
+    }
+
     public function create(array $identity, array $payload): void
     {
         $data = $this->service->createLobby((int)$identity['actor_id'], $payload);
