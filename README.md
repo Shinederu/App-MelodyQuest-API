@@ -548,7 +548,7 @@ Pour cette version, respecter cet ordre afin d'eviter un contrat mixte:
 
 1. verifier les migrations jusqu'a `020`, puis appliquer `sql\021_melodyquest_track_preferences.sql` sur `ShinedeCore`;
 2. deployer immediatement le runtime API;
-3. deployer ensuite le frontend `20260912-game-ui`;
+3. deployer ensuite le frontend `20260912-game-ui-v2`;
 4. verifier un compte existant, les invites, les filtres et une proposition; ne pas envoyer de fausses propositions dans le catalogue live pour les tests automatises.
 
 Le fichier SQL reste dans DEV et ne doit pas etre copie dans le runtime PROD.

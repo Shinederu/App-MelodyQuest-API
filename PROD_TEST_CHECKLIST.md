@@ -13,7 +13,7 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260912-game-ui`.
+- Cache-bust frontend attendu: `20260912-game-ui-v2`.
 - La racine ouvre le menu et permet de jouer sans compte avec un pseudo temporaire.
 - Mode actif: reponses, score, classement, votes.
 - Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes.
