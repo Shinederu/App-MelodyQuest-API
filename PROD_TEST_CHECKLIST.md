@@ -5,7 +5,7 @@
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
 - API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `bin\`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/020_melodyquest_guest_players.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/021_melodyquest_track_preferences.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -13,13 +13,16 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260831-guest-mode`.
+- Cache-bust frontend attendu: `20260912-game-ui`.
 - La racine ouvre le menu et permet de jouer sans compte avec un pseudo temporaire.
 - Mode actif: reponses, score, classement, votes.
 - Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes.
 - Les suppressions de catalogue et de salon demandent une confirmation nommee.
 - Une partie est archivee dans `mq_game_session_*` avant reset, suppression, fermeture ou purge.
 - Fin du mode passif: retour automatique au lobby.
+- Relancer depuis ce lobby archive la partie precedente avant remise a zero; une TV peut aussi y etre liee.
+- Aucun plein ecran navigateur impose au lancement; menu de partie en tiroir PC/mobile.
+- Defauts nouveaux salons: public, 30 manches, 20 secondes, categorie visible, precision 80%.
 - L'action `markTvRoundReady` n'existe plus et doit etre refusee.
 - Le mode TV utilise un lecteur YouTube simple; aucun conteneur de double lecteur/preload TV ne doit etre requis.
 - Les commandes HTTP alimentent `mq_realtime_outbox`; elles n'attendent plus la publication Mercure.
@@ -123,13 +126,13 @@ Avec un compte admin catalogue:
    - solution claire apres bonne reponse/revelation;
    - classement et votes coherents.
 9. Creer un salon passif:
-   - salon prive par defaut;
+   - salon public par defaut;
    - partage et liaison TV disponibles;
    - pas de scoreboard pendant la partie passive;
    - retour automatique au lobby a la fin.
 10. Verifier `/tv`: QR affiche, pas de header/footer, son actif apres liaison.
 11. Verifier `#/tv-link`: saisie code et scan QR si support camera disponible.
-12. Verifier le mode joueur de salon si une TV est liee.
+12. Verifier le mode salon si une TV est liee: aucun iframe YouTube et vote suivant sous le resume de manche.
 13. Verifier `#/suggest-track`.
 14. Verifier les pages `#/management*` avec un compte admin; un invite doit etre redirige.
 
@@ -143,6 +146,19 @@ Avec un compte admin catalogue:
 6. Une publication echouee reste dans `mq_realtime_outbox` avec `attempts` et `last_error`, puis disparait apres reprise.
 7. Plusieurs actions rapprochees sur un meme salon ne creent qu'une ligne `lobby:{id}` avec une generation incrementee.
 8. Le worker de reprise s'execute sans erreur avec `php bin\process_realtime_outbox.php`.
+
+## Livraison UI et catalogue du 12 septembre
+
+1. Menu principal: TV/presentation accessibles, pseudo invite et edition dans le header, aucune introduction redondante.
+2. Lobby: commandes alignees, aucun bouton personnel absent, seuil de notoriété et comptes par categorie coherents.
+3. Partie: tiroir au-dessus du decor, option passage automatique accessible pendant l'ecoute, pseudos longs et statut absent uniquement.
+4. Createur compte ET invite: mettre un invite absent/present, exclure puis rejoindre avec score conserve.
+5. Correction: alias OU nom de l'oeuvre, debut a zero et fin; modifier puis appliquer dans management, verifier oeuvre/alias/piste conserves.
+6. Catalogue: note 1..10 et fin optionnelle modifiables, valeurs invalides refusees. Un seuil >1 exclut les pistes sans note.
+7. TV active: manche/categorie, votes et cinq essais rates; passive: pas de votes/classement. Verifier 800 x 480 et grand ecran.
+8. Sur une vraie TV: ecouter un extrait avec debut/fin, verifier l'arret a la fin et la reprise de la piste suivante sans boucle de resynchronisation.
+9. SMTP: une vraie proposition/piste en attente notifie contact@shinederu.ch; une panne SMTP ne doit pas annuler la soumission. Pas de garantie de remise en boite mail.
+10. PWA: inventaire et release coherents, aucun cache API/Mercure/YouTube ni recharge forcee pendant une partie.
 
 ## Criteres go/no-go
 

@@ -69,7 +69,7 @@ Ne pas deployer en PROD:
   - `participative`: mode actif avec reponses, scores, votes et classement;
   - `autoplay`: mode passif avec enchainement automatique, sans score, sans votes et sans reponse attendue.
 - Les salons passifs restent de vrais salons: code, membres, partage et liaison TV.
-- Les salons passifs sont prives par defaut cote frontend.
+- Les nouveaux salons sont publics par defaut dans les deux modes: 30 manches de 20 secondes.
 - La categorie visible est activee par defaut pour les nouveaux salons.
 - La precision des reponses est a `80%` par defaut pour les nouveaux salons.
 - La selection musicale est equilibree entre categories selectionnees quand c'est possible.
@@ -80,6 +80,9 @@ Ne pas deployer en PROD:
 - Les essais de reponse actifs et archives sont reunis sans doublon pour admin/statistiques.
 - L'analyse admin regroupe les fautes proches par oeuvre, remonte les alias recurrents et distingue les idees de contenu.
 - Les suggestions joueurs peuvent etre editees, refusees, marquees traitees ou appliquees directement au catalogue.
+- Les pistes ont des bornes debut/fin en secondes et une note de notoriété optionnelle de 1 a 10.
+- Le lobby peut filtrer par notoriété minimale; toutes les pistes restent eligibles par defaut.
+- Une nouvelle musique a valider ou proposition declenche une notification best-effort a `contact@shinederu.ch`.
 - Les avatars historiques `action=getAvatar` sont normalises vers l'API Auth active avant retour frontend.
 - Le mode TV frontend utilise un lecteur YouTube simple; l'action experimentale `markTvRoundReady` n'existe plus.
 - Les publications Mercure sont coalescees dans `mq_realtime_outbox` et executees apres la reponse HTTP.
@@ -142,6 +145,7 @@ Migrations:
 - `018_melodyquest_game_history.sql`: sessions de jeu et snapshots append-only.
 - `019_melodyquest_realtime_outbox.sql`: file durable et coalescee des snapshots Mercure.
 - `020_melodyquest_guest_players.sql`: sessions invitees, namespace `actor_id` et attribution anonyme de l'historique.
+- `021_melodyquest_track_preferences.sql`: notoriété des pistes, seuil des salons, oeuvre/timestamps des propositions et defauts 30/20. Ajouts idempotents, aucune suppression; les bornes de `mq_tracks` existaient deja.
 
 Regles DB:
 
@@ -299,7 +303,9 @@ Reponse erreur:
 
 Details importants:
 
-- `createLobby` accepte `game_mode`, `visibility`, `total_rounds`, `round_duration_seconds`, `reveal_duration_seconds`, `selected_category_ids`, `show_track_category`, `allow_early_reveal_vote`, `answer_similarity_threshold`.
+- `createLobby` accepte `game_mode`, `visibility`, `total_rounds`, `round_duration_seconds`, `reveal_duration_seconds`, `selected_category_ids`, `show_track_category`, `allow_early_reveal_vote`, `answer_similarity_threshold`, `min_familiarity`.
+- `min_familiarity` vaut 1..10, defaut 1. Les pistes sans note sont traitees comme 1 pour le filtre, sans leur attribuer artificiellement une note. Le filtre s'applique au comptage, au tirage, aux pools et aux preloads; les categories restent equilibrees dans le catalogue eligible.
+- `listCategories` expose `track_counts_by_familiarity` (cles 1..10 et 0 pour non note) pour actualiser les comptes du lobby sans nouvelle requete.
 - `createLobby` active `show_track_category` par defaut si absent.
 - `createLobby` utilise `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, `80` par defaut.
 - `updateLobbyConfig` accepte les memes options de reglage.
@@ -310,6 +316,8 @@ Details importants:
 - `voteNextRound` demande 50% des joueurs actifs apres revelation et refuse tant qu'un verrou de suggestion est actif.
 - `holdSuggestion` bloque temporairement le passage a la manche suivante pendant qu'un joueur propose une correction.
 - `submitSuggestion` accepte `track_correction` depuis une partie compte/invite et `new_track` depuis la page publique.
+- Une correction accepte soit `proposed_alias`, soit `proposed_family_name` (nom de l'oeuvre a deviner), ainsi que `proposed_title`, `proposed_artist`, `proposed_youtube_url`, `proposed_start_offset_seconds` et `proposed_end_offset_seconds`.
+- Les timestamps sont des secondes entieres entre 0 et 86400, avec fin strictement apres debut. Une proposition vide laisse les valeurs actuelles; `0` est une proposition de debut valide.
 - `submitSuggestion` limite l'abus a 5 suggestions par 10 minutes et par acteur/IP.
 - `submitAnswer` utilise `answer_similarity_threshold` avec similarite hybride et garde-fous sur reponses courtes.
 
@@ -330,7 +338,7 @@ Details importants:
 
 Avant revelation globale:
 
-- `round.track` contient les donnees necessaires a la lecture: `youtube_video_id`, `start_offset_seconds`;
+- `round.track` contient les donnees necessaires a la lecture: `youtube_video_id`, `start_offset_seconds`, `end_offset_seconds`;
 - la categorie peut etre incluse si le salon l'autorise;
 - les champs solution sont exposes au joueur qui a trouve, puis a tout le monde apres revelation.
 
@@ -345,6 +353,8 @@ Les joueurs ne recoivent pas l'historique complet des tentatives. `answer_attemp
 - `GET action=getTvState&device_token=...`: snapshot lobby/round/scoreboard pour la TV liee, sans session auth utilisateur.
 
 Il n'existe plus d'action `markTvRoundReady`.
+
+La liaison reste autorisee dans un salon `finished` pour preparer une nouvelle partie, mais pas dans un salon ferme. Les bornes d'extrait ne modifient ni le timer des manches ni le protocole de synchronisation.
 
 ## Actions admin catalogue
 
@@ -371,10 +381,13 @@ Reservees a `melodyquest.catalog.manage`, `core.super_admin` ou au fallback hist
 
 Details:
 
-- `validateTrack` peut recevoir `track_id`, `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url`, `start_offset_seconds`.
+- `createTrack`, `updateTrack` et `validateTrack` acceptent `start_offset_seconds`, `end_offset_seconds` et `familiarity` (null ou entier 1..10), controles par `utils/track_options.php`.
+- `validateTrack` accepte aussi `track_id`, `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url`.
+- `replacement_family_name`, utilise par l'application d'une correction, renomme la famille existante (140 caracteres max): toutes ses pistes partagent ce nom. Identifiant, slug et alias sont conserves.
 - Si `aliases` est fourni a `validateTrack`, la liste remplace les alias de l'oeuvre cible.
 - `updateSuggestion` enregistre les champs editables d'une suggestion sans modifier le catalogue.
 - `applySuggestion` applique une correction ou cree une nouvelle piste validee, puis marque la suggestion `reviewed`.
+- Les champs de revue comprennent `proposed_family_name`, `admin_start_offset_seconds` et `admin_end_offset_seconds`. Une suggestion deja appliquee renvoie `already_applied` sans rejouer la modification.
 - `updateSuggestionStatus` passe une suggestion en `pending`, `reviewed` ou `rejected`.
 - `listAnswerAttempts` fusionne les essais live et `mq_game_session_answer_attempts`, ignore la copie live lorsqu'elle est deja archivee, puis expose `alias_candidates`, `content_ideas`, `items` et `summary`.
 - Un candidat alias demande au moins deux occurrences ou deux joueurs. Les variantes proches d'une meme oeuvre sont regroupees avant classement.
@@ -435,8 +448,21 @@ Variables:
 - `MQ_REALTIME_OUTBOX_BATCH_SIZE`, defaut `8`, borne `1` a `50`
 - `MQ_REALTIME_OUTBOX_MAX_RUNTIME_MS`, defaut `2000`, borne `100` a `10000`
 - `MQ_REALTIME_OUTBOX_LOCK_TIMEOUT_SECONDS`, defaut `30`, borne `5` a `300`
+- `MQ_MODERATION_EMAIL_ENABLED`, defaut `true`
+- SMTP partage existant: `SMTP_HOST`, `SMTP_PORT`, `SMTP_AUTH`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE`, `SMTP_FROM`, `SMTP_NAME` (aucune duplication des secrets)
 
 `.env.example` est un exemple local versionne. Ne pas le copier en PROD.
+
+### Notifications de moderation
+
+`ModerationNotificationService` reutilise PHPMailer fourni par l'autoload Auth.
+Le destinataire est fixe a `contact@shinederu.ch`. Creation/repassage en attente
+d'une piste et soumission d'une proposition enregistrent un travail post-reponse.
+Le service relit l'etat avant envoi et ignore un element deja traite/valide.
+Il envoie un lien vers la page de gestion, sans donnees de session/joueur.
+Une erreur SMTP est loggee sans annuler l'action utilisateur. Ce mecanisme est
+best-effort: pas de retry durable ni de garantie de livraison en boite mail.
+Desactiver `MQ_MODERATION_EMAIL_ENABLED` sur les environnements de test.
 
 ## Mercure
 
@@ -508,16 +534,22 @@ rg -n "password|passwd|secret|BEGIN (RSA|OPENSSH|PRIVATE)|api_key" P:\DEV\GitHub
 
 Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
 
+Tests d'integration opt-in: `php tests/integration.php --local-fixture`.
+Ils utilisent uniquement `mq_ui_test` sur `127.0.0.1:33307` avec un MySQL jetable,
+les migrations 001..021 et deux comptes fixture 1/2. Ils ne lisent pas la DB
+partagee. Couverture: defauts, moderation des invites, conservation des scores,
+filtre musical, application des corrections et liaison TV apres une partie.
+
 ## Deploiement
 
 Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.env`, logs, caches runtime).
 
-Pour le mode invite, respecter cet ordre afin d'eviter un contrat mixte:
+Pour cette version, respecter cet ordre afin d'eviter un contrat mixte:
 
-1. appliquer `sql\020_melodyquest_guest_players.sql` sur `ShinedeCore`;
+1. verifier les migrations jusqu'a `020`, puis appliquer `sql\021_melodyquest_track_preferences.sql` sur `ShinedeCore`;
 2. deployer immediatement le runtime API;
-3. deployer ensuite le frontend `20260831-guest-mode`;
-4. verifier un compte existant puis deux sessions invitees distinctes.
+3. deployer ensuite le frontend `20260912-game-ui`;
+4. verifier un compte existant, les invites, les filtres et une proposition; ne pas envoyer de fausses propositions dans le catalogue live pour les tests automatises.
 
 Le fichier SQL reste dans DEV et ne doit pas etre copie dans le runtime PROD.
 

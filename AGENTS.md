@@ -51,6 +51,10 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Modes de salon: `participative` et `autoplay`.
 - Le mode `autoplay` est passif: pas de score, pas de vote, pas de reponse attendue.
 - La categorie visible et la precision `80%` sont les valeurs par defaut des nouveaux salons.
+- Nouveaux salons: publics dans les deux modes, 30 manches de 20 secondes.
+- `min_familiarity` filtre le tirage et les preloads, sans supprimer l'equilibrage des categories.
+- `track_options.php` valide strictement les secondes entieres et la note 1..10; ne pas convertir silencieusement les saisies invalides.
+- Une correction `proposed_family_name` renomme l'oeuvre partagee, sans recreer la famille ni perdre ses alias.
 - La presence est manuelle: `active` ou `away`.
 - Les joueurs absents ne bloquent pas les votes/transitions et recoivent un bonus selon config.
 - Le createur peut exclure un joueur sans detruire son historique de score.
@@ -88,11 +92,20 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Toute information temps reel doit pouvoir etre reconstruite via HTTP (`listPublicLobbies`, `getLobbyByCode`, `getRoundState`, `getTvState`).
 - La migration `019_melodyquest_realtime_outbox.sql` doit etre appliquee avant de deployer le code d'outbox.
 - La migration `020_melodyquest_guest_players.sql` doit etre appliquee avant le runtime invite; elle ne supprime aucune donnee de jeu.
+- La migration additive `021_melodyquest_track_preferences.sql` precede le runtime notoriété/timestamps des propositions.
 - Les lignes sont coalescees par flux et acquittees avec leur generation; ne pas remplacer ce mecanisme par un `publish()` synchrone dans un controleur.
 - Le drainage normal commence seulement apres `fastcgi_finish_request()`; un echec du hub ne doit pas faire echouer la commande metier.
 - `bin\process_realtime_outbox.php` est le filet CLI de reprise et peut etre supervise en mode `--loop` si necessaire.
 
 ## Verifications
+
+`tests/integration.php --local-fixture` est reserve a une DB jetable `mq_ui_test`
+sur `127.0.0.1:33307`, avec migrations installees et comptes fixture 1 et 2.
+Ne jamais le diriger vers ShinedeCore. Les tests unitaires n'ont pas ce prerequis.
+
+Les mails de moderation sont best-effort apres la reponse HTTP, via PHPMailer
+deja fourni par Auth et ses variables `SMTP_*`. Une panne SMTP est loggee sans
+annuler la proposition; pas de worker/retry durable pour les mails.
 
 ```powershell
 Get-ChildItem P:\DEV\GitHub\App-MelodyQuest-API -Recurse -Filter *.php | % { php -l $_.FullName }

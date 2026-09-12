@@ -9,5 +9,7 @@ require_once __DIR__ . '/AdminInsightsContractTest.php';
 require_once __DIR__ . '/HistoryContractTest.php';
 require_once __DIR__ . '/RealtimeOutboxTest.php';
 require_once __DIR__ . '/GuestPlayerContractTest.php';
+require_once __DIR__ . '/TrackOptionsTest.php';
+require_once __DIR__ . '/ModerationNotificationTest.php';
 
 mqFinishTests();

@@ -199,7 +199,7 @@ class TvService
             throw new RuntimeException('Salon introuvable');
         }
 
-        if (!in_array(strtolower((string)$lobby['status']), ['waiting', 'playing'], true)) {
+        if (!in_array(strtolower((string)$lobby['status']), ['waiting', 'playing', 'finished'], true)) {
             throw new RuntimeException('Ce salon ne peut plus lier de TV');
         }
 

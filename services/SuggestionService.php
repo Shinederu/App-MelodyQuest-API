@@ -45,6 +45,14 @@ class SuggestionService
         $proposedArtist = $this->cleanText($payload['proposed_artist'] ?? null, 160);
         $proposedYoutubeUrl = $this->cleanText($payload['proposed_youtube_url'] ?? null, 255);
         $proposedAlias = $this->cleanText($payload['proposed_alias'] ?? null, 160);
+        $proposedFamily = $this->cleanText($payload['proposed_family_name'] ?? null, 160);
+        if ($proposedAlias !== null && $proposedFamily !== null) throw new RuntimeException('Choisis un alias ou un nouveau nom d’œuvre');
+        $proposedStart = mq_optional_seconds($payload['proposed_start_offset_seconds'] ?? null);
+        $proposedEnd = mq_optional_seconds($payload['proposed_end_offset_seconds'] ?? null);
+        mq_track_bounds([
+            'start_offset_seconds' => $proposedStart ?? $track['start_offset_seconds'] ?? 0,
+            'end_offset_seconds' => $proposedEnd ?? $track['end_offset_seconds'] ?? null,
+        ]);
         $note = $this->cleanText($payload['note'] ?? null, 2000);
         $videoId = $proposedYoutubeUrl !== null ? mq_normalize_youtube_video_id($proposedYoutubeUrl) : '';
         if ($proposedYoutubeUrl !== null && $videoId === '') {
@@ -55,17 +63,17 @@ class SuggestionService
             throw new RuntimeException('Indique au moins un titre ou une URL');
         }
 
-        if ($type === 'track_correction' && $proposedTitle === null && $proposedArtist === null && $proposedYoutubeUrl === null && $proposedAlias === null && $note === null) {
+        if ($type === 'track_correction' && $proposedTitle === null && $proposedArtist === null && $proposedYoutubeUrl === null && $proposedAlias === null && $proposedFamily === null && $proposedStart === null && $proposedEnd === null && $note === null) {
             throw new RuntimeException('Indique au moins une proposition');
         }
 
         $stmt = $this->db->prepare(
             'INSERT INTO mq_player_suggestions
              (suggestion_type, user_id, actor_id, guest_session_id, submitter_name_snapshot, lobby_id, round_id, track_id, current_title, current_artist, current_youtube_video_id, current_family_name,
-              proposed_title, proposed_artist, proposed_youtube_url, proposed_youtube_video_id, proposed_alias, note)
+              proposed_title, proposed_artist, proposed_youtube_url, proposed_youtube_video_id, proposed_alias, proposed_family_name, proposed_start_offset_seconds, proposed_end_offset_seconds, admin_start_offset_seconds, admin_end_offset_seconds, note)
              VALUES
              (:suggestion_type, :user_id, :actor_id, :guest_session_id, :submitter_name_snapshot, :lobby_id, :round_id, :track_id, :current_title, :current_artist, :current_youtube_video_id, :current_family_name,
-              :proposed_title, :proposed_artist, :proposed_youtube_url, :proposed_youtube_video_id, :proposed_alias, :note)'
+              :proposed_title, :proposed_artist, :proposed_youtube_url, :proposed_youtube_video_id, :proposed_alias, :proposed_family_name, :proposed_start_offset_seconds, :proposed_end_offset_seconds, :admin_start_offset_seconds, :admin_end_offset_seconds, :note)'
         );
         $stmt->execute([
             'suggestion_type' => $type,
@@ -85,10 +93,17 @@ class SuggestionService
             'proposed_youtube_url' => $proposedYoutubeUrl,
             'proposed_youtube_video_id' => $videoId !== '' ? $videoId : null,
             'proposed_alias' => $proposedAlias,
+            'proposed_family_name' => $proposedFamily,
+            'proposed_start_offset_seconds' => $proposedStart,
+            'proposed_end_offset_seconds' => $proposedEnd,
+            'admin_start_offset_seconds' => $proposedStart,
+            'admin_end_offset_seconds' => $proposedEnd,
             'note' => $note,
         ]);
 
-        return ['id' => (int)$this->db->lastInsertId()];
+        $id = (int)$this->db->lastInsertId();
+        ModerationNotificationService::queue('suggestion', $id);
+        return ['id' => $id];
     }
 
     public function list(string $status = 'pending'): array
@@ -103,11 +118,14 @@ class SuggestionService
                     COALESCE(NULLIF(s.submitter_name_snapshot, ""), u.username) AS username,
                     reviewer.username AS reviewer_username,
                     applied.title AS applied_track_title,
-                    applied.artist AS applied_track_artist
+                    applied.artist AS applied_track_artist,
+                    current_track.start_offset_seconds AS current_start_offset_seconds,
+                    current_track.end_offset_seconds AS current_end_offset_seconds
              FROM mq_player_suggestions s
              LEFT JOIN users u ON u.id = s.user_id
              LEFT JOIN users reviewer ON reviewer.id = s.reviewed_by_user_id
              LEFT JOIN mq_tracks applied ON applied.id = s.applied_track_id
+             LEFT JOIN mq_tracks current_track ON current_track.id = s.track_id
              ' . $where . '
              ORDER BY s.created_at DESC
              LIMIT 200'
@@ -130,6 +148,9 @@ class SuggestionService
     public function apply(int $id, int $reviewerUserId, array $payload): array
     {
         $suggestion = $this->requireSuggestion($id);
+        if (!empty($suggestion['applied_at'])) {
+            return ['id' => $id, 'status' => $suggestion['status'], 'track_id' => (int)$suggestion['applied_track_id'], 'already_applied' => true];
+        }
         $draft = $this->buildDraft($suggestion, $payload);
         $this->persistDraft($id, $draft);
 
@@ -213,6 +234,12 @@ class SuggestionService
         if ($draft['admin_start_offset_seconds'] !== null) {
             $payload['start_offset_seconds'] = $draft['admin_start_offset_seconds'];
         }
+        if ($draft['admin_end_offset_seconds'] !== null) {
+            $payload['end_offset_seconds'] = $draft['admin_end_offset_seconds'];
+        }
+        if ($draft['proposed_family_name'] !== null) {
+            $payload['replacement_family_name'] = $draft['proposed_family_name'];
+        }
         if ($draft['proposed_alias'] !== null) {
             $payload['aliases'] = $this->mergeTrackAliases($trackId, $draft['proposed_alias']);
         }
@@ -254,6 +281,7 @@ class SuggestionService
             'youtube_url' => $draft['proposed_youtube_url'],
             'youtube_video_id' => $draft['proposed_youtube_video_id'],
             'start_offset_seconds' => $draft['admin_start_offset_seconds'] ?? 0,
+            'end_offset_seconds' => $draft['admin_end_offset_seconds'],
             'is_active' => 1,
         ];
 
@@ -330,6 +358,8 @@ class SuggestionService
             'admin_category_id' => $this->cleanDraftInt($payload, $suggestion, 'admin_category_id'),
             'admin_family_name' => $this->cleanDraftText($payload, $suggestion, 'admin_family_name', 160),
             'admin_start_offset_seconds' => $this->cleanDraftInt($payload, $suggestion, 'admin_start_offset_seconds'),
+            'admin_end_offset_seconds' => $this->cleanDraftInt($payload, $suggestion, 'admin_end_offset_seconds'),
+            'proposed_family_name' => $this->cleanDraftText($payload, $suggestion, 'proposed_family_name', 160),
             'note' => $this->cleanDraftText($payload, $suggestion, 'note', 2000),
         ];
     }
@@ -346,6 +376,8 @@ class SuggestionService
                  admin_category_id = :admin_category_id,
                  admin_family_name = :admin_family_name,
                  admin_start_offset_seconds = :admin_start_offset_seconds,
+                 admin_end_offset_seconds = :admin_end_offset_seconds,
+                 proposed_family_name = :proposed_family_name,
                  note = :note
              WHERE id = :id'
         );
@@ -358,6 +390,8 @@ class SuggestionService
             'admin_category_id' => $draft['admin_category_id'],
             'admin_family_name' => $draft['admin_family_name'],
             'admin_start_offset_seconds' => $draft['admin_start_offset_seconds'],
+            'admin_end_offset_seconds' => $draft['admin_end_offset_seconds'],
+            'proposed_family_name' => $draft['proposed_family_name'],
             'note' => $draft['note'],
             'id' => $id,
         ]);
@@ -375,6 +409,7 @@ class SuggestionService
     private function cleanDraftInt(array $payload, array $suggestion, string $key): ?int
     {
         $value = array_key_exists($key, $payload) ? $payload[$key] : ($suggestion[$key] ?? null);
+        if (str_ends_with($key, '_offset_seconds')) return mq_optional_seconds($value);
         if ($value === null || $value === '') {
             return null;
         }
@@ -419,7 +454,7 @@ class SuggestionService
     private function getTrackContext(int $trackId): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, t.youtube_video_id, f.name AS family_name
+            'SELECT t.id, t.title, t.artist, t.youtube_video_id, t.start_offset_seconds, t.end_offset_seconds, f.name AS family_name
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              WHERE t.id = :id

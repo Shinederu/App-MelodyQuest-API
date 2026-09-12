@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/DatabaseService.php';
 require_once __DIR__ . '/../utils/youtube.php';
+require_once __DIR__ . '/../utils/track_options.php';
+require_once __DIR__ . '/ModerationNotificationService.php';
 
 class CatalogService
 {
@@ -46,7 +48,21 @@ class CatalogService
              GROUP BY c.id, c.name, c.slug, c.is_active, c.created_at, c.updated_at
              ORDER BY c.name ASC'
         );
-        return $stmt->fetchAll();
+        $categories = $stmt->fetchAll();
+        $counts = $this->db->query(
+            'SELECT f.category_id, COALESCE(t.familiarity, 0) AS rating, COUNT(*) AS amount
+             FROM mq_tracks t JOIN mq_families f ON f.id = t.family_id
+             WHERE t.is_validated = 1 AND t.is_active = 1 AND f.is_active = 1
+             GROUP BY f.category_id, t.familiarity'
+        )->fetchAll();
+        $byCategory = [];
+        foreach ($counts as $row) {
+            $byCategory[(int)$row['category_id']][(int)$row['rating']] = (int)$row['amount'];
+        }
+        foreach ($categories as &$category) {
+            $category['track_counts_by_familiarity'] = (object)($byCategory[(int)$category['id']] ?? []);
+        }
+        return $categories;
     }
 
     public function listFamilies(?int $categoryId = null): array
@@ -113,7 +129,7 @@ class CatalogService
         if ($familyId) {
             $stmt = $this->db->prepare(
                 'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                        t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds,
+                        t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds, t.end_offset_seconds, t.familiarity,
                         t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
                  FROM mq_tracks t
                  JOIN mq_families f ON f.id = t.family_id
@@ -127,7 +143,7 @@ class CatalogService
 
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds,
+                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds, t.end_offset_seconds, t.familiarity,
                     t.is_active, t.is_validated, t.validated_at, t.created_at, t.updated_at
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
@@ -143,7 +159,7 @@ class CatalogService
 
         $stmt = $this->db->query(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
-                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds,
+                    t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds, t.end_offset_seconds, t.familiarity,
                     t.is_active, t.is_validated, t.created_at, t.updated_at,
                     creator.username AS created_by_username
              FROM mq_tracks t
@@ -219,6 +235,8 @@ class CatalogService
 
     public function createTrack(int $userId, array $payload): array
     {
+        $bounds = mq_track_bounds($payload);
+        $familiarity = mq_familiarity($payload['familiarity'] ?? null);
         $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
         $title = trim((string)($payload['title'] ?? ''));
         $youtubeVideoId = $this->resolveTrackVideoId($payload, true);
@@ -234,6 +252,7 @@ class CatalogService
             'duration_seconds',
             'start_offset_seconds',
             'end_offset_seconds',
+            'familiarity',
             'is_active',
             'is_validated',
             'validated_by',
@@ -246,8 +265,9 @@ class CatalogService
             'artist' => isset($payload['artist']) ? trim((string)$payload['artist']) : null,
             'youtube_video_id' => $youtubeVideoId,
             'duration_seconds' => isset($payload['duration_seconds']) ? (int)$payload['duration_seconds'] : null,
-            'start_offset_seconds' => isset($payload['start_offset_seconds']) ? (int)$payload['start_offset_seconds'] : 0,
-            'end_offset_seconds' => isset($payload['end_offset_seconds']) ? (int)$payload['end_offset_seconds'] : null,
+            'start_offset_seconds' => $bounds['start_offset_seconds'],
+            'end_offset_seconds' => $bounds['end_offset_seconds'],
+            'familiarity' => $familiarity,
             'is_active' => isset($payload['is_active']) ? (int)((bool)$payload['is_active']) : 1,
             'is_validated' => 0,
             'validated_by' => null,
@@ -269,7 +289,9 @@ class CatalogService
         );
         $stmt->execute($params);
 
-        return ['id' => (int)$this->db->lastInsertId()];
+        $id = (int)$this->db->lastInsertId();
+        ModerationNotificationService::queue('track', $id);
+        return ['id' => $id];
     }
 
     public function updateCategory(array $payload): array
@@ -446,9 +468,9 @@ class CatalogService
             throw new RuntimeException('id musique requis');
         }
 
-        $this->requireTrackRecord($id);
-
+        $before = $this->requireTrackRecord($id);
         $updated = $this->applyTrackUpdates($userId, $id, $payload, true, false);
+        if (!empty($before['is_validated'])) ModerationNotificationService::queue('track', $id);
 
         return ['id' => $id, 'updated' => $updated];
     }
@@ -464,6 +486,14 @@ class CatalogService
         $this->db->beginTransaction();
         try {
             $corrected = $this->applyTrackUpdates($userId, $trackId, $payload, false, true);
+            if (array_key_exists('replacement_family_name', $payload)) {
+                $name = trim((string)$payload['replacement_family_name']);
+                $length = function_exists('mb_strlen') ? mb_strlen($name) : strlen($name);
+                if ($name === '' || $length > 140) throw new RuntimeException('Nom d’œuvre invalide (140 caractères maximum)');
+                $rename = $this->db->prepare('UPDATE mq_families f JOIN mq_tracks t ON t.family_id = f.id SET f.name = :name WHERE t.id = :id');
+                $rename->execute(['name' => $name, 'id' => $trackId]);
+                $corrected += $rename->rowCount();
+            }
             $aliasesUpdated = 0;
 
             if (array_key_exists('aliases', $payload)) {
@@ -519,6 +549,7 @@ class CatalogService
             'id' => $trackId,
         ]);
 
+        if ($stmt->rowCount() > 0) ModerationNotificationService::queue('track', $trackId);
         return ['id' => $trackId, 'validated' => 0, 'updated' => $stmt->rowCount()];
     }
 
@@ -571,6 +602,7 @@ class CatalogService
 
     private function applyTrackUpdates(int $userId, int $id, array $payload, bool $markPending, bool $allowEmpty): int
     {
+        $bounds = mq_track_bounds($payload, $this->requireTrackRecord($id));
         $sets = [];
         $params = ['id' => $id];
 
@@ -616,11 +648,15 @@ class CatalogService
         }
         if (array_key_exists('start_offset_seconds', $payload)) {
             $sets[] = 'start_offset_seconds = :start_offset_seconds';
-            $params['start_offset_seconds'] = max(0, (int)$payload['start_offset_seconds']);
+            $params['start_offset_seconds'] = $bounds['start_offset_seconds'];
         }
         if (array_key_exists('end_offset_seconds', $payload)) {
             $sets[] = 'end_offset_seconds = :end_offset_seconds';
-            $params['end_offset_seconds'] = $payload['end_offset_seconds'] !== null ? (int)$payload['end_offset_seconds'] : null;
+            $params['end_offset_seconds'] = $bounds['end_offset_seconds'];
+        }
+        if (array_key_exists('familiarity', $payload)) {
+            $sets[] = 'familiarity = :familiarity';
+            $params['familiarity'] = mq_familiarity($payload['familiarity']);
         }
         if (array_key_exists('is_active', $payload)) {
             $sets[] = 'is_active = :is_active';

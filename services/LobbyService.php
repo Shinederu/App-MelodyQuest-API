@@ -7,6 +7,7 @@ require_once __DIR__ . '/PlayerSessionService.php';
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../repositories/PdoGameSessionRepository.php';
 require_once __DIR__ . '/../utils/youtube.php';
+require_once __DIR__ . '/../utils/track_options.php';
 
 class LobbyService
 {
@@ -44,7 +45,7 @@ class LobbyService
         $revealDuration = (int)($payload['reveal_duration_seconds'] ?? MQ_DEFAULT_REVEAL_DURATION);
         $revealDuration = max(3, min($revealDuration, 60));
 
-        $visibility = strtolower((string)($payload['visibility'] ?? 'private'));
+        $visibility = strtolower((string)($payload['visibility'] ?? 'public'));
         if (!in_array($visibility, ['public', 'private'], true)) {
             $visibility = 'private';
         }
@@ -72,8 +73,8 @@ class LobbyService
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO mq_lobbies
-                (lobby_code, name, owner_user_id, owner_actor_id, status, visibility, game_mode, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold)
-                VALUES (:code, :name, :owner_user_id, :owner_actor_id, "waiting", :visibility, :game_mode, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold)'
+                (lobby_code, name, owner_user_id, owner_actor_id, status, visibility, game_mode, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold, min_familiarity)
+                VALUES (:code, :name, :owner_user_id, :owner_actor_id, "waiting", :visibility, :game_mode, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold, :min_familiarity)'
             );
             $stmt->execute([
                 'code' => $code,
@@ -91,6 +92,7 @@ class LobbyService
                 'show_track_category' => $showTrackCategory,
                 'allow_early_reveal_vote' => $allowEarlyRevealVote,
                 'answer_similarity_threshold' => $answerSimilarityThreshold,
+                'min_familiarity' => mq_familiarity($payload['min_familiarity'] ?? 1, false),
             ]);
 
             $lobbyId = (int)$this->db->lastInsertId();
@@ -485,6 +487,11 @@ class LobbyService
                 $this->normalizeCategoryIds($payload['selected_category_ids'])
             );
             $clearPreloads = true;
+        }
+        if (array_key_exists('min_familiarity', $payload)) {
+            $clearPreloads = true;
+            $fields[] = 'min_familiarity = :min_familiarity';
+            $params['min_familiarity'] = mq_familiarity($payload['min_familiarity'], false);
         }
         if (array_key_exists('show_track_category', $payload)) {
             $fields[] = 'show_track_category = :show_track_category';
@@ -1889,6 +1896,7 @@ class LobbyService
                AND f.is_active = 1
                AND t.is_active = 1
                AND t.is_validated = 1
+               AND COALESCE(t.familiarity, 1) >= ' . (int)($this->requireLobby($lobbyId)['min_familiarity'] ?? 1) . '
                AND (
                  EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = t.id)
                  OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
@@ -2047,6 +2055,7 @@ class LobbyService
     private function pickEligibleTrack(int $lobbyId, array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
     {
         $where = ['f.is_active = 1', 't.is_active = 1', 't.is_validated = 1'];
+        $where[] = 'COALESCE(t.familiarity, 1) >= ' . (int)($this->requireLobby($lobbyId)['min_familiarity'] ?? 1);
         $params = [
             'pool_lobby_id_exists' => $lobbyId,
             'pool_lobby_id_empty' => $lobbyId,
@@ -2330,6 +2339,7 @@ class LobbyService
                AND f.is_active = 1
                AND t.is_active = 1
                AND t.is_validated = 1
+               AND COALESCE(t.familiarity, 1) >= ' . (int)($lobby['min_familiarity'] ?? 1) . '
                AND (
                  EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = :pool_track_id)
                  OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
@@ -2711,7 +2721,7 @@ class LobbyService
             throw new RuntimeException('Sélectionne au moins une catégorie avant de lancer la partie');
         }
 
-        $availableTracks = $this->countAvailableTracksForCategories($selectedCategoryIds);
+        $availableTracks = array_sum($this->getPlayableTrackCountsByCategory((int)$lobby['id'], $selectedCategoryIds));
         if ($availableTracks <= 0) {
             throw new RuntimeException('Aucune musique valide n\'est disponible dans les catégories sélectionnées');
         }
@@ -3089,7 +3099,7 @@ class LobbyService
 
         $mediaSelect = $this->buildTrackMediaSelect('t');
         $trackStmt = $this->db->prepare(
-            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, ' . $mediaSelect . ', f.id AS family_id, f.name AS family_name, c.id AS category_id, c.name AS category_name
+            'SELECT t.id, t.title, t.artist, t.start_offset_seconds, t.end_offset_seconds, ' . $mediaSelect . ', f.id AS family_id, f.name AS family_name, c.id AS category_id, c.name AS category_name
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
              JOIN mq_categories c ON c.id = f.category_id
@@ -3115,6 +3125,7 @@ class LobbyService
         $redacted = [
             'youtube_video_id' => $track['youtube_video_id'] ?? null,
             'start_offset_seconds' => isset($track['start_offset_seconds']) ? (int)$track['start_offset_seconds'] : 0,
+            'end_offset_seconds' => isset($track['end_offset_seconds']) ? (int)$track['end_offset_seconds'] : null,
         ];
 
         if ($includeCategory) {
