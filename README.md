@@ -389,6 +389,8 @@ Details importants:
   s'appliquent (joueur ayant trouve ou revelation globale, hors video indisponible).
 - Table `mq_family_knowledge`: un avis par œuvre/compte ou œuvre/session invitee,
   modifiable par upsert. Plusieurs musiques de la meme œuvre ne multiplient pas les avis.
+- Sans identite joueur existante, GET et POST sont refuses en HTTP 401 sans
+  creer de session invitee. L'appartenance au salon reste obligatoire.
 - Reponse privee `family_id`, `choice` (bool/null), `known_count`, `vote_count`,
   `known_percent` (entier arrondi ou null sans vote). `listFamilies` ajoute
   `knowledge` avec les trois valeurs agregees, jamais les choix individuels.
