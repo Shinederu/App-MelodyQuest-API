@@ -206,6 +206,13 @@ partie ne peut demarrer. Ne jamais automatiser/rejouer cette operation au
 deploiement. Pour une restauration exceptionnelle, relire le backup et les
 modifications posterieures avant toute ecriture; pas de restauration aveugle.
 
+Operation demandee executee le 2026-09-14: 2 726 pistes remises en attente,
+metadonnees conservees et comparees au backup. Sauvegarde hors runtime dans
+`P:\ARCHIVE\MelodyQuest\2026-09-14-before-timecode-review-193737.json`.
+Ne pas relancer cette commande lors des prochains deploiements; les validations
+suivantes sont le travail manuel de l'administrateur. Details dans
+`App-MelodyQuest/docs/2026-09-14-familiarity-review.md`.
+
 ## Import catalogue CSV
 
 Script:
