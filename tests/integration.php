@@ -162,5 +162,93 @@ mqTest('Une TV liee peut signaler puis terminer la derniere manche en mode passi
     mqAssertFalse($lobbies->advanceUnavailableRound(null, $payload)['advanced']);
 });
 
+mqTest('La connaissance est privee avant revelation, editable, dedupliquee par oeuvre et anonymisee pour les invites', function () use ($db, $lobbies, $owner, $guest, $categories): void {
+    $service = new FamilyKnowledgeService();
+    $lobby = $lobbies->createLobby($owner, ['selected_category_ids' => $categories, 'total_rounds' => 3])['lobby'];
+    $id = (int)$lobby['id'];
+    $lobbies->joinLobby($guest, $lobby['lobby_code']);
+    $lobbies->joinLobby(1, $lobby['lobby_code']);
+    $round = $lobbies->startRound($owner, $id)['round'];
+    $roundId = (int)$round['id'];
+    $payload = ['lobby_id' => $id, 'round_id' => $roundId, 'known' => true];
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload, true));
+    $db->exec("UPDATE mq_rounds SET started_at=DATE_SUB(NOW(3), INTERVAL 5 SECOND) WHERE id=$roundId");
+    $familyName = $db->query("SELECT f.name FROM mq_rounds r JOIN mq_tracks t ON t.id=r.track_id JOIN mq_families f ON f.id=t.family_id WHERE r.id=$roundId")->fetchColumn();
+    $lobbies->submitAnswer($owner, $id, ['guess_title' => $familyName]);
+    mqAssertSame(true, $service->forRound($owner, $payload, true)['choice']);
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload));
+    $db->exec("UPDATE mq_rounds SET status='reveal', reveal_started_at=NOW(3) WHERE id=$roundId");
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(2, $payload, true));
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, array_replace($payload, ['known' => 'false']), true));
+    $result = $service->forRound($guest, array_replace($payload, ['known' => false]), true);
+    mqAssertSame(2, $result['vote_count']);
+    mqAssertSame(50, $result['known_percent']);
+    $result = $service->forRound($guest, $payload, true);
+    mqAssertSame(2, $result['vote_count']);
+    mqAssertSame(100, $result['known_percent']);
+    mqAssertSame(null, $service->forRound(1, $payload)['choice']);
+    $service->forRound(1, array_replace($payload, ['known' => false]), true);
+    $family = $result['family_id'];
+    $lobbies->finishCurrentRound($owner, $id);
+    $second = $lobbies->startRound($owner, $id)['round'];
+    $next = (int)$second['id'];
+    $sameFamilyTrack = (int)$db->query("SELECT id FROM mq_tracks WHERE family_id=$family LIMIT 1")->fetchColumn();
+    $db->exec("UPDATE mq_rounds SET track_id=$sameFamilyTrack,status='reveal',reveal_started_at=NOW(3) WHERE id=$next");
+    $result = $service->forRound($guest, array_replace($payload, ['round_id' => $next]), true);
+    mqAssertSame(3, $result['vote_count']);
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload, true));
+    $db->exec('DELETE FROM mq_guest_sessions WHERE id=' . abs($guest));
+    mqAssertSame(3, $service->summaries([$family])[$family]['vote_count']);
+    mqAssertSame(1, (int)$db->query("SELECT COUNT(*) FROM mq_family_knowledge WHERE family_id=$family AND user_id IS NULL AND guest_session_id IS NULL")->fetchColumn());
+});
+
+mqTest('La file de verification est filtree et paginee sans perdre les bornes de lecture', function () use ($catalog, $tracks, $categories): void {
+    foreach ($tracks as $track) $catalog->unvalidateTrack($track);
+    $result = $catalog->listPendingTracks(['category_id' => $categories[1], 'page_size' => 2, 'page' => 99, 'search' => 'Theme QA']);
+    mqAssertSame(4, $result['total']);
+    mqAssertSame(2, $result['pages']);
+    mqAssertSame(2, $result['page']);
+    mqAssertSame(2, count($result['items']));
+    mqAssertSame(12, (int)$result['items'][0]['start_offset_seconds']);
+    mqAssertSame(90, (int)$result['items'][0]['end_offset_seconds']);
+    mqAssertSame(0, $catalog->listPendingTracks(['search' => '%_not_a_wildcard'])['total']);
+});
+
+mqTest('Le mode passif accepte un avis facultatif uniquement apres revelation', function () use ($db, $lobbies, $owner): void {
+    $lobby = $lobbies->createLobby($owner, ['game_mode' => 'autoplay', 'total_rounds' => 1])['lobby'];
+    $id = (int)$lobby['id'];
+    $round = $lobbies->startRound($owner, $id)['round'];
+    $roundId = (int)$round['id'];
+    $payload = ['lobby_id' => $id, 'round_id' => $roundId, 'known' => false];
+    $service = new FamilyKnowledgeService();
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($owner, $payload, true));
+    $db->exec("UPDATE mq_rounds SET status='reveal',reveal_started_at=NOW(3) WHERE id=$roundId");
+    mqAssertSame(false, $service->forRound($owner, $payload, true)['choice']);
+});
+
+mqTest('La remise en verification exige un backup et preserve toutes les metadonnees', function () use ($db): void {
+    require_once __DIR__ . '/../scripts/lib/CatalogRecheck.php';
+    $operation = new CatalogRecheck($db);
+    $count = $operation->inspect()['tracks'];
+    $backup = sys_get_temp_dir() . '/mq-recheck-' . bin2hex(random_bytes(8)) . '.json';
+    mqAssertThrows(RuntimeException::class, fn() => $operation->apply($backup, $count));
+    mqAssertFalse(file_exists($backup));
+    $statuses = $db->query('SELECT id,status FROM mq_lobbies')->fetchAll(PDO::FETCH_KEY_PAIR);
+    $db->exec('UPDATE mq_lobbies SET status="finished" WHERE status="playing"');
+    mqAssertThrows(RuntimeException::class, fn() => $operation->apply($backup, $count + 1));
+    mqAssertFalse(file_exists($backup));
+    $result = $operation->apply($backup, $count);
+    mqAssertSame($count, $result['pending']);
+    $saved = json_decode(file_get_contents($backup), true, 512, JSON_THROW_ON_ERROR);
+    mqAssertSame($count, count($saved['tracks']));
+    mqAssertThrows(RuntimeException::class, fn() => $operation->apply($backup, $count));
+    // Restore only the disposable fixture state for subsequent interactive checks.
+    $restore = $db->prepare('UPDATE mq_tracks SET is_validated=?,validated_by=?,validated_at=?,updated_at=? WHERE id=?');
+    foreach ($saved['tracks'] as $track) $restore->execute([$track['is_validated'],$track['validated_by'],$track['validated_at'],$track['updated_at'],$track['id']]);
+    $restore = $db->prepare('UPDATE mq_lobbies SET status=? WHERE id=?');
+    foreach ($statuses as $id => $status) $restore->execute([$status,$id]);
+    unlink($backup);
+});
+
 echo "Local fixture lobby: $lobbyId / $code; owner actor: $owner; guest actor: $guest\n";
 mqFinishTests();

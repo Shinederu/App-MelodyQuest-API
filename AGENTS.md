@@ -101,6 +101,22 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 
 ## Verifications
 
+Reprise du 2026-09-14:
+
+- Migration 023 avant le runtime. Le sondage `FamilyKnowledgeService` porte sur
+  `mq_families`, une reponse par compte/session invitee et par œuvre, sans effet
+  sur `mq_tracks.familiarity`. Il reutilise la visibilite de solution et les
+  droits membre de `getRoundState`; ne pas publier les choix individuels via Mercure.
+- `mq_family_knowledge` anonymise le rattachement invite a expiration (SET NULL),
+  sans perdre l'agregat. Aucune statistique de profil invite.
+- `listPendingTracks` est pagine (50 par defaut), avec `pending_total` global
+  et `total` filtre; ne pas compter seulement les items de la page.
+- `scripts/recheck_catalog.php` est une operation manuelle source-only, jamais
+  une migration de demarrage. Dry-run par defaut, backup exclusif, compte exact
+  attendu, transaction et refus si une partie tourne. Aucune notification en masse.
+- Ne pas relancer la remise en attente apres que l'utilisateur a commence sa
+  verification; son historique d'execution est dans la doc frontend du 14 septembre.
+
 `tests/integration.php --local-fixture` est reserve a une DB jetable `mq_ui_test`
 sur `127.0.0.1:33307`, avec migrations installees et comptes fixture 1 et 2.
 Ne jamais le diriger vers ShinedeCore. Les tests unitaires n'ont pas ce prerequis.

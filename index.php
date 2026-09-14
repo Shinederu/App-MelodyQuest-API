@@ -22,6 +22,7 @@ require_once __DIR__ . '/controllers/CatalogController.php';
 require_once __DIR__ . '/controllers/SuggestionController.php';
 require_once __DIR__ . '/controllers/AdminInsightsController.php';
 require_once __DIR__ . '/controllers/TvController.php';
+require_once __DIR__ . '/services/FamilyKnowledgeService.php';
 
 $body = get_body();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -38,6 +39,10 @@ try {
     switch ($method) {
         case 'GET':
             switch ($action) {
+                case 'getFamilyKnowledge':
+                    $identity = PlayerMiddleware::check();
+                    json_success(null, (new FamilyKnowledgeService())->forRound((int)$identity['actor_id'], $_GET));
+                    break;
                 case 'getPlayerIdentity':
                     json_success(null, ['identity' => PlayerMiddleware::optional()]);
                     break;
@@ -101,6 +106,10 @@ try {
 
         case 'POST':
             switch ($action) {
+                case 'voteFamilyKnowledge':
+                    $identity = PlayerMiddleware::check();
+                    json_success('Réponse enregistrée', (new FamilyKnowledgeService())->forRound((int)$identity['actor_id'], $body, true));
+                    break;
                 case 'updateGuestNickname':
                     $nickname = (string)($body['nickname'] ?? '');
                     if ($nickname === '') {

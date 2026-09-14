@@ -31,7 +31,7 @@ class CatalogController
 
     public function listPendingTracks(): void
     {
-        json_success(null, ['items' => $this->service->listPendingTracks()]);
+        json_success(null, $this->service->listPendingTracks($_GET));
     }
 
     public function createCategory(int $userId, array $payload): void

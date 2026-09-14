@@ -5,7 +5,7 @@
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
 - API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `bin\`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/021_melodyquest_track_preferences.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/023_melodyquest_family_knowledge.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -13,10 +13,10 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260912-game-ui-v2`.
+- Cache-bust frontend attendu: `20260914-familiarity-review`.
 - La racine ouvre le menu et permet de jouer sans compte avec un pseudo temporaire.
 - Mode actif: reponses, score, classement, votes.
-- Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes.
+- Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes de manche. Le sondage de connaissance de l'oeuvre reste facultatif.
 - Les suppressions de catalogue et de salon demandent une confirmation nommee.
 - Une partie est archivee dans `mq_game_session_*` avant reset, suppression, fermeture ou purge.
 - Fin du mode passif: retour automatique au lobby.
@@ -26,6 +26,10 @@
 - L'action `markTvRoundReady` n'existe plus et doit etre refusee.
 - Le mode TV utilise un lecteur YouTube simple; aucun conteneur de double lecteur/preload TV ne doit etre requis.
 - Les commandes HTTP alimentent `mq_realtime_outbox`; elles n'attendent plus la publication Mercure.
+
+La campagne de verification manuelle du catalogue impose de revalider quelques
+pistes avant les tests de jeu live. Ne pas revalider artificiellement tout le
+catalogue et ne pas rejouer `recheck_catalog.php` pendant cette campagne.
 
 ## Variables d'environnement
 
@@ -96,10 +100,12 @@ Avec une session `sid` valide:
 24. `POST action=submitSuggestion` pour une correction de piste.
 25. `POST action=submitSuggestion` en `new_track` depuis une page publique ou sans session.
 26. `POST action=markTvRoundReady` doit retourner une erreur.
+27. `GET action=getFamilyKnowledge&lobby_id=...&round_id=...`: refuse avant revelation et hors salon; choix prive apres revelation.
+28. `POST action=voteFamilyKnowledge` avec `known=true`, puis `false`: un seul avis par oeuvre, pas de score ou de vote de manche modifie.
 
 Avec un compte admin catalogue:
 
-1. `GET action=listPendingTracks`.
+1. `GET action=listPendingTracks&page=1&category_id=...&search=...`: page bornee, total filtre et pending_total global distincts.
 2. `POST action=validateTrack` avec correction de champs et alias.
 3. `POST action=unvalidateTrack`.
 4. `GET action=listSuggestions&status=all`.
@@ -135,6 +141,8 @@ Avec un compte admin catalogue:
 12. Verifier le mode salon si une TV est liee: aucun iframe YouTube et vote suivant sous le resume de manche.
 13. Verifier `#/suggest-track`.
 14. Verifier les pages `#/management*` avec un compte admin; un invite doit etre redirige.
+15. Sondage apres solution: Oui/Non sur l'oeuvre, effectif et pourcentage apres choix, erreur/reessai non bloquant. Aucun sondage sur la TV partagee.
+16. Validation: debut/fin en `m:ss`, apercu borne, sauvegarde en secondes, selection suivante et navigation des pages de la file.
 
 ## Mercure
 

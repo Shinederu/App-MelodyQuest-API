@@ -4,6 +4,7 @@ require_once __DIR__ . '/DatabaseService.php';
 require_once __DIR__ . '/../utils/youtube.php';
 require_once __DIR__ . '/../utils/track_options.php';
 require_once __DIR__ . '/ModerationNotificationService.php';
+require_once __DIR__ . '/FamilyKnowledgeService.php';
 
 class CatalogService
 {
@@ -93,7 +94,7 @@ class CatalogService
                  ORDER BY f.name ASC'
             );
             $stmt->execute(['category_id' => $categoryId]);
-            return $this->hydrateFamilyAliases($stmt->fetchAll());
+            return $this->hydrateFamilyKnowledge($this->hydrateFamilyAliases($stmt->fetchAll()));
         }
 
         $stmt = $this->db->query(
@@ -119,7 +120,16 @@ class CatalogService
              GROUP BY f.id, f.category_id, c.name, f.name, f.slug, f.description, f.is_active
              ORDER BY c.name ASC, f.name ASC'
         );
-        return $this->hydrateFamilyAliases($stmt->fetchAll());
+        return $this->hydrateFamilyKnowledge($this->hydrateFamilyAliases($stmt->fetchAll()));
+    }
+
+    private function hydrateFamilyKnowledge(array $families): array
+    {
+        $summaries = (new FamilyKnowledgeService())->summaries(array_column($families, 'id'));
+        foreach ($families as &$family) {
+            $family['knowledge'] = $summaries[(int)$family['id']] ?? FamilyKnowledgeService::summary(0, 0);
+        }
+        return $families;
     }
 
     public function listTracks(?int $familyId = null): array
@@ -153,11 +163,30 @@ class CatalogService
         return $this->hydrateTrackRows($stmt->fetchAll());
     }
 
-    public function listPendingTracks(): array
+    public function listPendingTracks(array $filters = []): array
     {
         $mediaSelect = $this->buildTrackMediaSelect('t');
+        $where = 't.is_validated = 0';
+        $params = [];
+        if ((int)($filters['category_id'] ?? 0) > 0) {
+            $where .= ' AND f.category_id = :category';
+            $params['category'] = (int)$filters['category_id'];
+        }
+        $search = mb_substr(trim((string)($filters['search'] ?? '')), 0, 200);
+        if ($search !== '') {
+            $where .= ' AND LOCATE(:search, CONCAT_WS(" ", f.name, t.title, t.artist, t.youtube_video_id)) > 0';
+            $params['search'] = $search;
+        }
+        $count = $this->db->prepare('SELECT COUNT(*) FROM mq_tracks t JOIN mq_families f ON f.id = t.family_id WHERE ' . $where);
+        $count->execute($params);
+        $total = (int)$count->fetchColumn();
+        $pendingTotal = (int)$this->db->query('SELECT COUNT(*) FROM mq_tracks WHERE is_validated = 0')->fetchColumn();
+        $pageSize = max(1, min(100, (int)($filters['page_size'] ?? 50)));
+        $pages = max(1, (int)ceil($total / $pageSize));
+        $page = max(1, min($pages, (int)($filters['page'] ?? 1)));
+        $offset = ($page - 1) * $pageSize;
 
-        $stmt = $this->db->query(
+        $stmt = $this->db->prepare(
             'SELECT t.id, t.family_id, f.category_id, c.name AS category_name, f.name AS family_name,
                     t.title, t.artist, ' . $mediaSelect . ', t.duration_seconds, t.start_offset_seconds, t.end_offset_seconds, t.familiarity,
                     t.is_active, t.is_validated, t.created_at, t.updated_at,
@@ -166,10 +195,13 @@ class CatalogService
              JOIN mq_families f ON f.id = t.family_id
              JOIN mq_categories c ON c.id = f.category_id
              LEFT JOIN users creator ON creator.id = t.created_by
-             WHERE t.is_validated = 0
-             ORDER BY t.created_at ASC, t.id ASC'
+             WHERE ' . $where . '
+             ORDER BY c.name ASC, f.name ASC, t.title ASC, t.id ASC
+             LIMIT ' . $pageSize . ' OFFSET ' . $offset
         );
-        return $this->hydrateTrackRows($stmt->fetchAll());
+        $stmt->execute($params);
+        return ['items' => $this->hydrateTrackRows($stmt->fetchAll()), 'total' => $total,
+            'pending_total' => $pendingTotal, 'page' => $page, 'pages' => $pages, 'page_size' => $pageSize];
     }
 
     public function createCategory(int $userId, array $payload): array

@@ -67,7 +67,7 @@ Ne pas deployer en PROD:
 
 - Deux modes de salon existent:
   - `participative`: mode actif avec reponses, scores, votes et classement;
-  - `autoplay`: mode passif avec enchainement automatique, sans score, sans votes et sans reponse attendue.
+  - `autoplay`: mode passif avec enchainement automatique, sans score, sans votes de manche et sans reponse attendue. Le sondage de connaissance de l'œuvre reste facultatif apres revelation.
 - Les salons passifs restent de vrais salons: code, membres, partage et liaison TV.
 - Les nouveaux salons sont publics par defaut dans les deux modes: 30 manches de 20 secondes.
 - La categorie visible est activee par defaut pour les nouveaux salons.
@@ -90,6 +90,8 @@ Ne pas deployer en PROD:
 - La racine frontend et les parcours joueur fonctionnent sans compte.
 - Les comptes utilisent `actor_id = users.id`; les invites utilisent `actor_id = -mq_guest_sessions.id`.
 - Une session invitee expire apres 2 heures d'inactivite glissantes et ne cree jamais de ligne dans `users`.
+- Un sondage facultatif Oui/Non concerne l'œuvre a deviner, en actif ou passif,
+  uniquement quand la solution est accessible au joueur. Aucun effet sur le jeu.
 
 ## Contraintes produit
 
@@ -148,6 +150,9 @@ Migrations:
 - `020_melodyquest_guest_players.sql`: sessions invitees, namespace `actor_id` et attribution anonyme de l'historique.
 - `021_melodyquest_track_preferences.sql`: notoriété des pistes, seuil des salons, oeuvre/timestamps des propositions et defauts 30/20. Ajouts idempotents, aucune suppression; les bornes de `mq_tracks` existaient deja.
 - `022_melodyquest_playback_reports.sql`: types `track_removal` / `video_unavailable`, cle unique des signalements en attente et echeance `mq_rounds.unavailable_skip_at`. Aucune suppression de donnees; a appliquer avant le nouveau runtime.
+- `023_melodyquest_family_knowledge.sql`: avis par œuvre, uniques par compte ou
+  session invitee. Expiration invitee: FK SET NULL, avis anonymise conserve.
+  Aucune migration ne remet automatiquement le catalogue en attente.
 
 Regles DB:
 
@@ -180,6 +185,26 @@ php P:\DEV\GitHub\App-MelodyQuest-API\scripts\backfill_game_history.php --env-di
 ```
 
 La migration `018` doit etre appliquee auparavant avec un compte autorise a creer des tables. Le script utilise ensuite le compte applicatif et ne modifie ni ne supprime les donnees sources.
+
+## Remise en verification manuelle
+
+Commande source-only: `scripts/recheck_catalog.php`, dry-run par defaut.
+Exemple de precontrole sans modification:
+
+```powershell
+php scripts/recheck_catalog.php --env-dir=P:\PROD\API\auth --db-host=192.168.10.10 --database=ShinedeCore
+```
+
+L'application explicite ajoute `--apply --expected-count=<nombre-verifie>` et
+`--backup=<chemin-absolu-hors-PROD.json>`. Le fichier doit etre nouveau. La
+transaction verrouille les salons et pistes, refuse toute partie en cours,
+exporte les lignes avant modification, puis remet uniquement la validation a
+zero (validateur/date effaces). Les timecodes, titres, IDs, notes et autres
+metadonnees sont compares avant/apres; historique, œuvres et alias restent intacts.
+Aucun mail par piste ni suppression. Sans piste revalidee, aucune nouvelle
+partie ne peut demarrer. Ne jamais automatiser/rejouer cette operation au
+deploiement. Pour une restauration exceptionnelle, relire le backup et les
+modifications posterieures avant toute ecriture; pas de restauration aveugle.
 
 ## Import catalogue CSV
 
@@ -347,6 +372,30 @@ Details importants:
 
 ## Round state
 
+### Connaissance des œuvres
+
+- `GET action=getFamilyKnowledge&lobby_id=...&round_id=...`
+- `POST action=voteFamilyKnowledge`: `lobby_id`, `round_id`, `known` booleen strict.
+- Identite joueur et appartenance au salon requises, compte ou invite. Pas de
+  vote anonyme ni de jeton TV. L'œuvre est derivee de la manche courante, jamais
+  acceptee depuis le client; les memes regles de visibilite que `getRoundState`
+  s'appliquent (joueur ayant trouve ou revelation globale, hors video indisponible).
+- Table `mq_family_knowledge`: un avis par œuvre/compte ou œuvre/session invitee,
+  modifiable par upsert. Plusieurs musiques de la meme œuvre ne multiplient pas les avis.
+- Reponse privee `family_id`, `choice` (bool/null), `known_count`, `vote_count`,
+  `known_percent` (entier arrondi ou null sans vote). `listFamilies` ajoute
+  `knowledge` avec les trois valeurs agregees, jamais les choix individuels.
+- Le pourcentage vaut `100 * Oui / (Oui + Non)`. Il ne mesure que les repondants,
+  pas la population generale. Afficher l'effectif; un petit echantillon reste fragile.
+- Aucun pseudo, horodatage de vote ou historique de preferences n'est stocke.
+  A expiration/suppression d'un invite, son rattachement disparait mais son avis
+  participe toujours au total anonyme. Un nouvel invite peut donc revoter;
+  ce sondage n'est pas un scrutin resistant aux comptes/sessions multiples.
+- Pas de nouvelle publication Mercure, de polling, de score ou de verrou de manche.
+  La note editoriale `mq_tracks.familiarity` et `min_familiarity` restent independantes.
+
+### Snapshot de manche
+
 `getRoundState` renvoie notamment:
 
 - `round.preload_seconds`
@@ -405,6 +454,10 @@ Reservees a `melodyquest.catalog.manage`, `core.super_admin` ou au fallback hist
 
 Details:
 
+- `listPendingTracks` accepte `category_id`, `search`, `page`, `page_size` (1..100,
+  defaut 50). Reponse `items`, `total` filtre, `pending_total` global, `page`,
+  `pages`, `page_size`. Pages hors plage ramenees a la derniere, ordre stable
+  categorie/œuvre/titre/ID. Le frontend ne doit pas compter seulement `items`.
 - `createTrack`, `updateTrack` et `validateTrack` acceptent `start_offset_seconds`, `end_offset_seconds` et `familiarity` (null ou entier 1..10), controles par `utils/track_options.php`.
 - `validateTrack` accepte aussi `track_id`, `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url`.
 - `replacement_family_name`, utilise par l'application d'une correction, renomme la famille existante (140 caracteres max): toutes ses pistes partagent ce nom. Identifiant, slug et alias sont conserves.
@@ -560,7 +613,7 @@ Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
 
 Tests d'integration opt-in: `php tests/integration.php --local-fixture`.
 Ils utilisent uniquement `mq_ui_test` sur `127.0.0.1:33307` avec un MySQL jetable,
-les migrations 001..022 et deux comptes fixture 1/2. Ils ne lisent pas la DB
+les migrations 001..023 et deux comptes fixture 1/2. Ils ne lisent pas la DB
 partagee. Couverture: defauts, moderation des invites, conservation des scores,
 filtre musical, application des corrections et liaison TV apres une partie.
 
@@ -570,9 +623,9 @@ Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.
 
 Pour cette version, respecter cet ordre afin d'eviter un contrat mixte:
 
-1. verifier les migrations jusqu'a `021`, puis appliquer `sql\022_melodyquest_playback_reports.sql` sur `ShinedeCore`;
+1. verifier les migrations jusqu'a `022`, puis appliquer `sql\023_melodyquest_family_knowledge.sql` sur `ShinedeCore`;
 2. deployer immediatement le runtime API;
-3. deployer ensuite le frontend `20260912-game-ui-v2`;
+3. deployer ensuite le frontend `20260914-familiarity-review`;
 4. verifier un compte existant, les invites, les filtres et une proposition; ne pas envoyer de fausses propositions dans le catalogue live pour les tests automatises.
 
 Le fichier SQL reste dans DEV et ne doit pas etre copie dans le runtime PROD.
