@@ -198,6 +198,22 @@ La migration `018` doit etre appliquee auparavant avec un compte autorise a cree
 
 ## Remise en verification manuelle
 
+Etat actualise le 2026-09-15: l'utilisateur a annule la verification exhaustive.
+Les 2 702 pistes encore en attente ont ete validees en une transaction; les
+24 deja validees sont conservees a l'identique. Total: 2 726 validees, aucune
+en attente. Seuls `is_validated` et la date `validated_at` manquante ont change;
+aucun validateur fictif, timecode, titre, alias, avis ou historique modifie.
+Toutes les autres valeurs des pistes ont ete comparees avant/apres.
+Sauvegarde: `P:\ARCHIVE\MelodyQuest\2026-09-15-before-catalog-validation-183337.json`.
+SHA-256: `9fe29d5b0fc95d1619d3b62191759dbf548b7dcf994203c84c5447761a52a8f1`.
+Controle public: `listTracks` et `listCategories`, 2 726 pistes jouables.
+Pas de changement runtime ni de validation automatique des ajouts futurs.
+Cette operation ne vaut pas verification individuelle des videos. Les
+signalements existants restent intacts. Ne pas rejouer la remise en attente.
+
+La procedure ci-dessous reste documentee pour une eventuelle nouvelle demande
+explicite, pas comme etape de deploiement.
+
 Commande source-only: `scripts/recheck_catalog.php`, dry-run par defaut.
 Exemple de precontrole sans modification:
 

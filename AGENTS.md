@@ -101,6 +101,12 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 
 ## Verifications
 
+Etat catalogue du 2026-09-15: l'utilisateur a annule la revue exhaustive.
+2 702 pistes revalidees en lot, 24 validations precedentes conservees, total
+2 726 validees. Aucun changement de titres/timecodes/alias. Sauvegarde et preuve
+dans README, section remise en verification. Ne pas rejouer le reset du
+14 septembre. Les nouvelles propositions gardent leur validation habituelle.
+
 Reprise du 2026-09-15: migration 025 avant le runtime. Estimation par œuvre
 `mq_families.notoriety_seed` (60/75/100, defaut 60); score effectif
 `floor((10 * seed + 100 * Oui) / (10 + nombre_avis))`. Partager la formule SQL/PHP
