@@ -5,7 +5,7 @@
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
 - API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `bin\`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/023_melodyquest_family_knowledge.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/024_melodyquest_notoriety.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -13,7 +13,7 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260914-familiarity-review`.
+- Cache-bust frontend attendu: `20260915-notoriety-slider`.
 - La racine ouvre le menu et permet de jouer sans compte avec un pseudo temporaire.
 - Mode actif: reponses, score, classement, votes.
 - Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes de manche. Le sondage de connaissance de l'oeuvre reste facultatif.
@@ -158,7 +158,7 @@ Avec un compte admin catalogue:
 ## Livraison UI et catalogue du 12 septembre
 
 1. Menu principal: TV/presentation accessibles, pseudo invite et edition dans le header, aucune introduction redondante.
-2. Lobby: commandes alignees, aucun bouton personnel absent, seuil de notoriété et comptes par categorie coherents.
+2. Lobby actif/passif: curseur natif a trois crans Tout/Connues 60 %/Tres connues 90 %, comptes par categorie coherents, persistance au rechargement, desactive pour les non-createurs. Gestion: estimation 50/75/100 partagee par œuvre, conservee si non modifiee lors d'une validation de musique.
 3. Partie: tiroir au-dessus du decor, option passage automatique accessible pendant l'ecoute, pseudos longs et statut absent uniquement.
 4. Createur compte ET invite: mettre un invite absent/present, exclure puis rejoindre avec score conserve.
 5. Correction: alias OU nom de l'oeuvre, debut a zero et fin; modifier puis appliquer dans management, verifier oeuvre/alias/piste conserves.

@@ -81,8 +81,8 @@ Ne pas deployer en PROD:
 - L'analyse admin regroupe les fautes proches par oeuvre, remonte les alias recurrents et distingue les idees de contenu.
 - Les suggestions joueurs peuvent etre editees, refusees, marquees traitees ou appliquees directement au catalogue.
 - Les demandes de suppression exigent un motif et une confirmation admin explicite; les signalements automatiques de videos indisponibles ne suppriment ni ne desactivent une piste.
-- Les pistes ont des bornes debut/fin en secondes et une note de notoriété optionnelle de 1 a 10.
-- Le lobby peut filtrer par notoriété minimale; toutes les pistes restent eligibles par defaut.
+- Les pistes ont des bornes debut/fin en secondes. La notoriete est partagee par œuvre: estimation initiale 50/75/100 %, puis ajustement par les avis Oui/Non.
+- Le lobby filtre par minimum 0/60/90 %; toutes les pistes validees restent eligibles par defaut, independamment de leur notoriete.
 - Une nouvelle musique a valider ou proposition declenche une notification best-effort a `contact@shinederu.ch`.
 - Les avatars historiques `action=getAvatar` sont normalises vers l'API Auth active avant retour frontend.
 - Le mode TV frontend utilise un lecteur YouTube simple; l'action experimentale `markTvRoundReady` n'existe plus.
@@ -153,6 +153,12 @@ Migrations:
 - `023_melodyquest_family_knowledge.sql`: avis par œuvre, uniques par compte ou
   session invitee. Expiration invitee: FK SET NULL, avis anonymise conserve.
   Aucune migration ne remet automatiquement le catalogue en attente.
+- `024_melodyquest_notoriety.sql`: ajoute l'estimation partagee `mq_families.notoriety_seed`
+  et `mq_lobbies.min_notoriety`. Au premier passage uniquement, l'estimation
+  reprend la moyenne des anciennes notes de pistes multipliee par 10, arrondie
+  au preset 50/75/100 le plus proche (seuils 62.5 et 87.5). Sans note: 50.
+  Les anciens seuils de salons sont traduits en 0/60/90. Un second passage ne
+  refait pas cette initialisation. Aucun avis, note historique ou validation supprime.
 
 Regles DB:
 
@@ -337,9 +343,10 @@ Reponse erreur:
 
 Details importants:
 
-- `createLobby` accepte `game_mode`, `visibility`, `total_rounds`, `round_duration_seconds`, `reveal_duration_seconds`, `selected_category_ids`, `show_track_category`, `allow_early_reveal_vote`, `answer_similarity_threshold`, `min_familiarity`.
-- `min_familiarity` vaut 1..10, defaut 1. Les pistes sans note sont traitees comme 1 pour le filtre, sans leur attribuer artificiellement une note. Le filtre s'applique au comptage, au tirage, aux pools et aux preloads; les categories restent equilibrees dans le catalogue eligible.
-- `listCategories` expose `track_counts_by_familiarity` (cles 1..10 et 0 pour non note) pour actualiser les comptes du lobby sans nouvelle requete.
+- `createLobby` accepte `game_mode`, `visibility`, `total_rounds`, `round_duration_seconds`, `reveal_duration_seconds`, `selected_category_ids`, `show_track_category`, `allow_early_reveal_vote`, `answer_similarity_threshold`, `min_notoriety`.
+- `min_notoriety` vaut strictement 0, 60 ou 90, defaut 0. Il utilise la notoriete effective de l'œuvre pour le comptage, le tirage, les pools et les preloads; les categories restent equilibrees dans le catalogue eligible. Aucun assouplissement silencieux si trop peu de musiques correspondent.
+- Compatibilite en entree: `min_familiarity` est traduit (1 -> 0, 2..8 -> 60, 9..10 -> 90); `min_notoriety` est prioritaire si les deux sont fournis. L'ancien champ DB est conserve et mis en miroir (1/6/9). Recharger les anciens clients pour les nouveaux comptes et libelles.
+- `listCategories` expose `track_counts_by_notoriety` (cles pourcentages entiers) pour actualiser les comptes du lobby sans nouvelle requete.
 - `createLobby` active `show_track_category` par defaut si absent.
 - `createLobby` utilise `MQ_DEFAULT_ANSWER_SIMILARITY_THRESHOLD`, `80` par defaut.
 - `updateLobbyConfig` accepte les memes options de reglage.
@@ -392,16 +399,23 @@ Details importants:
 - Sans identite joueur existante, GET et POST sont refuses en HTTP 401 sans
   creer de session invitee. L'appartenance au salon reste obligatoire.
 - Reponse privee `family_id`, `choice` (bool/null), `known_count`, `vote_count`,
-  `known_percent` (entier arrondi ou null sans vote). `listFamilies` ajoute
-  `knowledge` avec les trois valeurs agregees, jamais les choix individuels.
-- Le pourcentage vaut `100 * Oui / (Oui + Non)`. Il ne mesure que les repondants,
-  pas la population generale. Afficher l'effectif; un petit echantillon reste fragile.
+  `known_percent` (pourcentage brut arrondi ou null sans vote), `notoriety_seed`
+  et `notoriety_percent`. `listFamilies` ajoute `notoriety_seed` et `knowledge`
+  avec ces valeurs agregees, jamais les choix individuels.
+- La notoriete utilise `floor((10 * notoriety_seed + 100 * Oui) / (10 + nombre_avis))`.
+  L'estimation initiale est moderee par un poids de 10, sans faux votes DB.
+  Sans avis, elle reste a 50/75/100; avec beaucoup d'avis, elle converge vers
+  leur proportion de Oui. Le meme arrondi inferieur est utilise pour les filtres
+  et l'affichage. Exemple: estimation 100 + un Non = 90 %, encore eligible a 90.
+  Le brut `known_percent` reste disponible; ne pas presenter la notoriete ponderee
+  comme le pourcentage reel de repondants. Ce n'est pas une mesure de population.
 - Aucun pseudo, horodatage de vote ou historique de preferences n'est stocke.
   A expiration/suppression d'un invite, son rattachement disparait mais son avis
   participe toujours au total anonyme. Un nouvel invite peut donc revoter;
   ce sondage n'est pas un scrutin resistant aux comptes/sessions multiples.
 - Pas de nouvelle publication Mercure, de polling, de score ou de verrou de manche.
-  La note editoriale `mq_tracks.familiarity` et `min_familiarity` restent independantes.
+  L'ancienne note `mq_tracks.familiarity` est conservee pour l'historique mais
+  n'est plus utilisee dans le tirage.
 
 ### Snapshot de manche
 
@@ -467,7 +481,8 @@ Details:
   defaut 50). Reponse `items`, `total` filtre, `pending_total` global, `page`,
   `pages`, `page_size`. Pages hors plage ramenees a la derniere, ordre stable
   categorie/œuvre/titre/ID. Le frontend ne doit pas compter seulement `items`.
-- `createTrack`, `updateTrack` et `validateTrack` acceptent `start_offset_seconds`, `end_offset_seconds` et `familiarity` (null ou entier 1..10), controles par `utils/track_options.php`.
+- `createTrack`, `updateTrack` et `validateTrack` acceptent `start_offset_seconds`, `end_offset_seconds` et `notoriety_seed` (50/75/100, partage par œuvre). L'ancienne `familiarity` reste acceptee pour compatibilite, sans effet sur le tirage. Omettre `notoriety_seed` preserve l'estimation de l'œuvre existante; une nouvelle œuvre commence a 50. Les bornes restent controlees par `utils/track_options.php`.
+- `createFamily` et `updateFamily` acceptent aussi `notoriety_seed`. Changer l'estimation ne supprime aucun avis. Les modifications œuvre + musique sont transactionnelles.
 - `validateTrack` accepte aussi `track_id`, `category_id`, `family_name`, `aliases`, `title`, `artist`, `youtube_video_id`, `youtube_url`.
 - `replacement_family_name`, utilise par l'application d'une correction, renomme la famille existante (140 caracteres max): toutes ses pistes partagent ce nom. Identifiant, slug et alias sont conserves.
 - Si `aliases` est fourni a `validateTrack`, la liste remplace les alias de l'oeuvre cible.
@@ -622,7 +637,7 @@ Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
 
 Tests d'integration opt-in: `php tests/integration.php --local-fixture`.
 Ils utilisent uniquement `mq_ui_test` sur `127.0.0.1:33307` avec un MySQL jetable,
-les migrations 001..023 et deux comptes fixture 1/2. Ils ne lisent pas la DB
+les migrations 001..024 et deux comptes fixture 1/2. Ils ne lisent pas la DB
 partagee. Couverture: defauts, moderation des invites, conservation des scores,
 filtre musical, application des corrections et liaison TV apres une partie.
 
@@ -632,9 +647,9 @@ Preserver les fichiers runtime deja presents en PROD si un jour ils existent (`.
 
 Pour cette version, respecter cet ordre afin d'eviter un contrat mixte:
 
-1. verifier les migrations jusqu'a `022`, puis appliquer `sql\023_melodyquest_family_knowledge.sql` sur `ShinedeCore`;
+1. verifier les migrations jusqu'a `023`, puis appliquer `sql\024_melodyquest_notoriety.sql` sur `ShinedeCore`;
 2. deployer immediatement le runtime API;
-3. deployer ensuite le frontend `20260914-familiarity-review`;
+3. deployer ensuite le frontend `20260915-notoriety-slider`;
 4. verifier un compte existant, les invites, les filtres et une proposition; ne pas envoyer de fausses propositions dans le catalogue live pour les tests automatises.
 
 Le fichier SQL reste dans DEV et ne doit pas etre copie dans le runtime PROD.

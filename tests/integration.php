@@ -29,7 +29,8 @@ foreach (['Jeux video', 'Dessins animes'] as $name) {
     $cat = $catalog->createCategory(1, ['name' => $name, 'slug' => strtolower(str_replace(' ', '-', $name)) . '-' . $suffix]);
     $categories[] = (int)$cat['id'];
     foreach ([null, 3, 7, 9] as $rating) {
-        $track = $catalog->createTrack(1, ['category_id' => $cat['id'], 'family_name' => 'Oeuvre QA ' . $suffix,
+        $track = $catalog->createTrack(1, ['category_id' => $cat['id'], 'family_name' => 'Oeuvre QA ' . $suffix . '-' . ($rating ?? 'inconnu'),
+            'notoriety_seed' => $rating >= 9 ? 100 : ($rating >= 7 ? 75 : 50),
             'title' => 'Theme QA ' . ($rating ?? 'inconnu'), 'youtube_video_id' => 'M7lc1UVf-VE',
             'start_offset_seconds' => 12, 'end_offset_seconds' => 90, 'familiarity' => $rating]);
         $catalog->validateTrack(1, (int)$track['id']);
@@ -64,7 +65,7 @@ mqTest('Le createur invite peut mettre absent et exclure un invite sans effacer 
 });
 
 mqTest('Le filtrage garde un tirage equilibre et exclut les musiques sous le seuil', function () use ($catalog, $lobbies, $owner, $lobbyId, $categories): void {
-    $lobbies->updateLobbyConfig($owner, $lobbyId, ['min_familiarity' => 7, 'total_rounds' => 4]);
+    $lobbies->updateLobbyConfig($owner, $lobbyId, ['min_notoriety' => 60, 'total_rounds' => 4]);
     $counts = mqInvokePrivate($lobbies, 'getPlayableTrackCountsByCategory', [$lobbyId, $categories]);
     mqAssertSame([2, 2], array_values($counts));
     $state = $lobbies->startRound($owner, $lobbyId);
@@ -72,7 +73,7 @@ mqTest('Le filtrage garde un tirage equilibre et exclut les musiques sous le seu
     mqAssertSame(90, (int)$round['round']['track']['end_offset_seconds']);
     mqAssertFalse(isset($round['round']['track']['family_name']));
     foreach ($catalog->listCategories() as $category) {
-        if (in_array((int)$category['id'], $categories, true)) mqAssertSame(1, (int)((array)$category['track_counts_by_familiarity'])[7]);
+        if (in_array((int)$category['id'], $categories, true)) mqAssertSame(1, (int)((array)$category['track_counts_by_notoriety'])[75]);
     }
 });
 
@@ -224,6 +225,48 @@ mqTest('Le mode passif accepte un avis facultatif uniquement apres revelation', 
     mqAssertThrows(RuntimeException::class, fn() => $service->forRound($owner, $payload, true));
     $db->exec("UPDATE mq_rounds SET status='reveal',reveal_started_at=NOW(3) WHERE id=$roundId");
     mqAssertSame(false, $service->forRound($owner, $payload, true)['choice']);
+});
+
+mqTest('La notoriete partagee preserve les avis et filtre exactement les seuils 60 et 90', function () use ($db, $catalog, $lobbies, $owner, $suffix): void {
+    $cat = (int)$catalog->createCategory(1, ['name' => 'Notoriete', 'slug' => 'notoriete-' . $suffix])['id'];
+    $ids = [];
+    foreach ([50, 75, 100] as $seed) {
+        $ids[$seed] = (int)$catalog->createTrack(1, ['category_id' => $cat, 'family_name' => 'Seed ' . $seed,
+            'notoriety_seed' => $seed, 'title' => 'Test', 'youtube_video_id' => 'M7lc1UVf-VE'])['id'];
+        $catalog->validateTrack(1, $ids[$seed]);
+    }
+    $family = (int)$db->query('SELECT family_id FROM mq_tracks WHERE id=' . $ids[100])->fetchColumn();
+    $extra = (int)$catalog->createTrack(1, ['family_id' => $family, 'title' => 'Same work', 'youtube_video_id' => 'M7lc1UVf-VE'])['id'];
+    $catalog->validateTrack(1, $extra);
+    mqAssertSame(100, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
+    $db->exec("INSERT INTO mq_family_knowledge(family_id,user_id,known) VALUES($family,1,0)");
+    $summary = (new FamilyKnowledgeService())->summaries([$family])[$family];
+    mqAssertSame(90, $summary['notoriety_percent']);
+    $room = $lobbies->createLobby($owner, ['selected_category_ids' => [$cat], 'min_notoriety' => 90, 'game_mode' => 'autoplay'])['lobby'];
+    $id = (int)$room['id'];
+    foreach ([0 => 4, 60 => 3, 90 => 2] as $min => $expected) {
+        $lobbies->updateLobbyConfig($owner, $id, ['min_notoriety' => $min]);
+        mqAssertSame([$expected], array_values(mqInvokePrivate($lobbies, 'getPlayableTrackCountsByCategory', [$id, [$cat]])));
+    }
+    mqAssertTrue(mqInvokePrivate($lobbies, 'isTrackPlayableForLobby', [$id, $ids[100]]));
+    mqAssertFalse(mqInvokePrivate($lobbies, 'isTrackPlayableForLobby', [$id, $ids[75]]));
+    $catalog->updateFamily(1, ['id' => $family, 'notoriety_seed' => 75]);
+    $summary = (new FamilyKnowledgeService())->summaries([$family])[$family];
+    mqAssertSame(1, $summary['vote_count']);
+    mqAssertSame(68, $summary['notoriety_percent']);
+    mqAssertSame([0], array_values(mqInvokePrivate($lobbies, 'getPlayableTrackCountsByCategory', [$id, [$cat]])));
+    $before = (int)$db->query('SELECT COUNT(*) FROM mq_tracks')->fetchColumn();
+    mqAssertThrows(RuntimeException::class, fn() => $catalog->createTrack(1, ['family_id' => $family, 'title' => 'Invalid', 'notoriety_seed' => 60, 'youtube_video_id' => 'M7lc1UVf-VE']));
+    mqAssertSame($before, (int)$db->query('SELECT COUNT(*) FROM mq_tracks')->fetchColumn());
+    $catalog->validateTrack(1, $extra, ['notoriety_seed' => 50]);
+    mqAssertSame(50, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
+    $beforeRows = $db->query('SELECT * FROM mq_tracks ORDER BY id')->fetchAll();
+    $migrationDb = new PDO('mysql:host=127.0.0.1;port=33307;dbname=mq_ui_test;charset=utf8mb4', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $stmt = $migrationDb->query(file_get_contents(__DIR__ . '/../sql/024_melodyquest_notoriety.sql'));
+    do { if ($stmt->columnCount()) $stmt->fetchAll(); } while ($stmt->nextRowset());
+    mqAssertSame($beforeRows, $db->query('SELECT * FROM mq_tracks ORDER BY id')->fetchAll());
+    mqAssertSame(50, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
+    mqAssertSame(1, (int)$db->query("SELECT COUNT(*) FROM mq_family_knowledge WHERE family_id=$family")->fetchColumn());
 });
 
 mqTest('La remise en verification exige un backup et preserve toutes les metadonnees', function () use ($db): void {

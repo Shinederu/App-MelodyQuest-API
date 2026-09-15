@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/DatabaseService.php';
 require_once __DIR__ . '/LobbyService.php';
+require_once __DIR__ . '/../utils/notoriety.php';
 
 class FamilyKnowledgeService
 {
@@ -43,22 +44,24 @@ class FamilyKnowledgeService
         return ['family_id' => $familyId, 'choice' => $choice === false ? null : (bool)$choice] + $summary;
     }
 
-    public static function summary(int $known, int $total): array
+    public static function summary(int $known, int $total, int $seed = 50): array
     {
         return ['known_count' => $known, 'vote_count' => $total,
-            'known_percent' => $total > 0 ? (int)round(100 * $known / $total) : null];
+            'known_percent' => $total > 0 ? (int)round(100 * $known / $total) : null,
+            'notoriety_seed' => $seed, 'notoriety_percent' => mq_notoriety_percent($seed, $known, $total)];
     }
 
     public function summaries(array $familyIds): array
     {
         $ids = array_values(array_unique(array_filter(array_map('intval', $familyIds), static fn($id) => $id > 0)));
         if (!$ids) return [];
-        $stmt = $this->db->prepare('SELECT family_id, SUM(known) AS known_count, COUNT(*) AS vote_count
-            FROM mq_family_knowledge WHERE family_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') GROUP BY family_id');
+        $stmt = $this->db->prepare('SELECT f.id AS family_id, f.notoriety_seed, COALESCE(SUM(k.known), 0) AS known_count, COUNT(k.id) AS vote_count
+            FROM mq_families f LEFT JOIN mq_family_knowledge k ON k.family_id = f.id
+            WHERE f.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') GROUP BY f.id, f.notoriety_seed');
         $stmt->execute($ids);
         $result = [];
         foreach ($stmt->fetchAll() as $row) {
-            $result[(int)$row['family_id']] = self::summary((int)$row['known_count'], (int)$row['vote_count']);
+            $result[(int)$row['family_id']] = self::summary((int)$row['known_count'], (int)$row['vote_count'], (int)$row['notoriety_seed']);
         }
         return $result;
     }

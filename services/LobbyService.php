@@ -8,6 +8,7 @@ require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../repositories/PdoGameSessionRepository.php';
 require_once __DIR__ . '/../utils/youtube.php';
 require_once __DIR__ . '/../utils/track_options.php';
+require_once __DIR__ . '/../utils/notoriety.php';
 
 class LobbyService
 {
@@ -67,14 +68,15 @@ class LobbyService
             ? $this->normalizeCategoryIds($payload['selected_category_ids'])
             : $this->getDefaultSelectedCategoryIds();
 
+        $minNotoriety = mq_notoriety_minimum($payload);
         $code = $this->generateLobbyCode();
 
         $this->db->beginTransaction();
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO mq_lobbies
-                (lobby_code, name, owner_user_id, owner_actor_id, status, visibility, game_mode, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold, min_familiarity)
-                VALUES (:code, :name, :owner_user_id, :owner_actor_id, "waiting", :visibility, :game_mode, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold, :min_familiarity)'
+                (lobby_code, name, owner_user_id, owner_actor_id, status, visibility, game_mode, max_players, total_rounds, round_duration_seconds, reveal_duration_seconds, guess_mode, selected_category_ids, show_track_category, allow_early_reveal_vote, answer_similarity_threshold, min_familiarity, min_notoriety)
+                VALUES (:code, :name, :owner_user_id, :owner_actor_id, "waiting", :visibility, :game_mode, :max_players, :total_rounds, :round_duration, :reveal_duration, :guess_mode, :selected_category_ids, :show_track_category, :allow_early_reveal_vote, :answer_similarity_threshold, :min_familiarity, :min_notoriety)'
             );
             $stmt->execute([
                 'code' => $code,
@@ -92,7 +94,8 @@ class LobbyService
                 'show_track_category' => $showTrackCategory,
                 'allow_early_reveal_vote' => $allowEarlyRevealVote,
                 'answer_similarity_threshold' => $answerSimilarityThreshold,
-                'min_familiarity' => mq_familiarity($payload['min_familiarity'] ?? 1, false),
+                'min_familiarity' => $minNotoriety ? intdiv($minNotoriety, 10) : 1,
+                'min_notoriety' => $minNotoriety,
             ]);
 
             $lobbyId = (int)$this->db->lastInsertId();
@@ -488,10 +491,13 @@ class LobbyService
             );
             $clearPreloads = true;
         }
-        if (array_key_exists('min_familiarity', $payload)) {
+        if (array_key_exists('min_notoriety', $payload) || array_key_exists('min_familiarity', $payload)) {
             $clearPreloads = true;
+            $minimum = mq_notoriety_minimum($payload);
+            $fields[] = 'min_notoriety = :min_notoriety';
+            $params['min_notoriety'] = $minimum;
             $fields[] = 'min_familiarity = :min_familiarity';
-            $params['min_familiarity'] = mq_familiarity($payload['min_familiarity'], false);
+            $params['min_familiarity'] = $minimum ? intdiv($minimum, 10) : 1;
         }
         if (array_key_exists('show_track_category', $payload)) {
             $fields[] = 'show_track_category = :show_track_category';
@@ -1975,11 +1981,12 @@ class LobbyService
             'SELECT f.category_id, COUNT(DISTINCT t.id) AS track_count
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
+             ' . mq_notoriety_join() . '
              WHERE f.category_id IN (' . implode(', ', $placeholders) . ')
                AND f.is_active = 1
                AND t.is_active = 1
                AND t.is_validated = 1
-               AND COALESCE(t.familiarity, 1) >= ' . (int)($this->requireLobby($lobbyId)['min_familiarity'] ?? 1) . '
+               AND ' . mq_notoriety_sql() . ' >= ' . (int)($this->requireLobby($lobbyId)['min_notoriety'] ?? 0) . '
                AND (
                  EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = t.id)
                  OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)
@@ -2138,7 +2145,7 @@ class LobbyService
     private function pickEligibleTrack(int $lobbyId, array $selectedCategoryIds, array $excludedTrackIds, array $excludedFamilyIds = []): ?int
     {
         $where = ['f.is_active = 1', 't.is_active = 1', 't.is_validated = 1'];
-        $where[] = 'COALESCE(t.familiarity, 1) >= ' . (int)($this->requireLobby($lobbyId)['min_familiarity'] ?? 1);
+        $where[] = mq_notoriety_sql() . ' >= ' . (int)($this->requireLobby($lobbyId)['min_notoriety'] ?? 0);
         $params = [
             'pool_lobby_id_exists' => $lobbyId,
             'pool_lobby_id_empty' => $lobbyId,
@@ -2181,6 +2188,7 @@ class LobbyService
 
         $baseSql = 'FROM mq_tracks t
                     JOIN mq_families f ON f.id = t.family_id
+                    ' . mq_notoriety_join() . '
                     WHERE ' . implode(' AND ', $where);
 
         $countStmt = $this->db->prepare('SELECT COUNT(*) AS c ' . $baseSql);
@@ -2418,11 +2426,12 @@ class LobbyService
             'SELECT t.id, f.category_id
              FROM mq_tracks t
              JOIN mq_families f ON f.id = t.family_id
+             ' . mq_notoriety_join() . '
              WHERE t.id = :track_id
                AND f.is_active = 1
                AND t.is_active = 1
                AND t.is_validated = 1
-               AND COALESCE(t.familiarity, 1) >= ' . (int)($lobby['min_familiarity'] ?? 1) . '
+               AND ' . mq_notoriety_sql() . ' >= ' . (int)($lobby['min_notoriety'] ?? 0) . '
                AND (
                  EXISTS (SELECT 1 FROM mq_lobby_track_pool p WHERE p.lobby_id = :pool_lobby_id_exists AND p.track_id = :pool_track_id)
                  OR NOT EXISTS (SELECT 1 FROM mq_lobby_track_pool p2 WHERE p2.lobby_id = :pool_lobby_id_empty)

@@ -52,7 +52,7 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - Le mode `autoplay` est passif: pas de score, pas de vote, pas de reponse attendue.
 - La categorie visible et la precision `80%` sont les valeurs par defaut des nouveaux salons.
 - Nouveaux salons: publics dans les deux modes, 30 manches de 20 secondes.
-- `min_familiarity` filtre le tirage et les preloads, sans supprimer l'equilibrage des categories.
+- `min_notoriety` (0/60/90) filtre les œuvres, le tirage et les preloads, sans supprimer l'equilibrage des categories. `min_familiarity` reste accepte uniquement pour les anciens clients (1 -> 0, 2..8 -> 60, 9..10 -> 90).
 - `track_options.php` valide strictement les secondes entieres et la note 1..10; ne pas convertir silencieusement les saisies invalides.
 - Une correction `proposed_family_name` renomme l'oeuvre partagee, sans recreer la famille ni perdre ses alias.
 - La presence est manuelle: `active` ou `away`.
@@ -100,6 +100,14 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - `bin\process_realtime_outbox.php` est le filet CLI de reprise et peut etre supervise en mode `--loop` si necessaire.
 
 ## Verifications
+
+Reprise du 2026-09-15: migration 024 avant le runtime. Estimation par œuvre
+`mq_families.notoriety_seed` (50/75/100, defaut 50); score effectif
+`floor((10 * seed + 100 * Oui) / (10 + nombre_avis))`. Partager la formule SQL/PHP
+via `utils/notoriety.php`; ne jamais inserer de faux avis pour initialiser.
+Conserver les anciennes notes, votes, validations et historiques. Ne pas relancer
+la remise en attente du 14 septembre. Les formulaires de musique transmettent
+l'estimation seulement apres une modification explicite de ce champ.
 
 Reprise du 2026-09-14:
 

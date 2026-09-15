@@ -51,17 +51,18 @@ class CatalogService
         );
         $categories = $stmt->fetchAll();
         $counts = $this->db->query(
-            'SELECT f.category_id, COALESCE(t.familiarity, 0) AS rating, COUNT(*) AS amount
+            'SELECT f.category_id, ' . mq_notoriety_sql() . ' AS rating, COUNT(*) AS amount
              FROM mq_tracks t JOIN mq_families f ON f.id = t.family_id
+             ' . mq_notoriety_join() . '
              WHERE t.is_validated = 1 AND t.is_active = 1 AND f.is_active = 1
-             GROUP BY f.category_id, t.familiarity'
+             GROUP BY f.category_id, rating'
         )->fetchAll();
         $byCategory = [];
         foreach ($counts as $row) {
             $byCategory[(int)$row['category_id']][(int)$row['rating']] = (int)$row['amount'];
         }
         foreach ($categories as &$category) {
-            $category['track_counts_by_familiarity'] = (object)($byCategory[(int)$category['id']] ?? []);
+            $category['track_counts_by_notoriety'] = (object)($byCategory[(int)$category['id']] ?? []);
         }
         return $categories;
     }
@@ -128,6 +129,7 @@ class CatalogService
         $summaries = (new FamilyKnowledgeService())->summaries(array_column($families, 'id'));
         foreach ($families as &$family) {
             $family['knowledge'] = $summaries[(int)$family['id']] ?? FamilyKnowledgeService::summary(0, 0);
+            $family['notoriety_seed'] = $family['knowledge']['notoriety_seed'];
         }
         return $families;
     }
@@ -236,18 +238,20 @@ class CatalogService
         }
 
         $this->assertCategoryExists($categoryId);
+        $seed = mq_notoriety_seed($payload['notoriety_seed'] ?? 50);
 
         $this->db->beginTransaction();
         try {
             $stmt = $this->db->prepare(
-                'INSERT INTO mq_families (category_id, name, slug, description, is_active, created_by)
-                 VALUES (:category_id, :name, :slug, :description, :is_active, :created_by)'
+                'INSERT INTO mq_families (category_id, name, slug, description, is_active, created_by, notoriety_seed)
+                 VALUES (:category_id, :name, :slug, :description, :is_active, :created_by, :notoriety_seed)'
             );
             $stmt->execute([
                 'category_id' => $categoryId,
                 'name' => $name,
                 'slug' => strtolower($slug),
                 'description' => isset($payload['description']) ? (string)$payload['description'] : null,
+                'notoriety_seed' => $seed,
                 'is_active' => isset($payload['is_active']) ? (int)((bool)$payload['is_active']) : 1,
                 'created_by' => $userId,
             ]);
@@ -267,9 +271,24 @@ class CatalogService
 
     public function createTrack(int $userId, array $payload): array
     {
+        $this->db->beginTransaction();
+        try {
+            $result = $this->createTrackRecord($userId, $payload);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            throw $error;
+        }
+        ModerationNotificationService::queue('track', $result['id']);
+        return $result;
+    }
+
+    private function createTrackRecord(int $userId, array $payload): array
+    {
         $bounds = mq_track_bounds($payload);
         $familiarity = mq_familiarity($payload['familiarity'] ?? null);
         $familyId = $this->resolveTrackFamilyId($userId, $payload, true);
+        $this->updateFamilySeed($familyId, $payload);
         $title = trim((string)($payload['title'] ?? ''));
         $youtubeVideoId = $this->resolveTrackVideoId($payload, true);
         if ($title === '' || $youtubeVideoId === null) {
@@ -322,7 +341,6 @@ class CatalogService
         $stmt->execute($params);
 
         $id = (int)$this->db->lastInsertId();
-        ModerationNotificationService::queue('track', $id);
         return ['id' => $id];
     }
 
@@ -380,6 +398,11 @@ class CatalogService
         $sets = [];
         $params = ['id' => $id];
         $familyName = (string)$existing['name'];
+
+        if (array_key_exists('notoriety_seed', $payload)) {
+            $sets[] = 'notoriety_seed = :notoriety_seed';
+            $params['notoriety_seed'] = mq_notoriety_seed($payload['notoriety_seed']);
+        }
 
         if (array_key_exists('category_id', $payload)) {
             $categoryId = (int)$payload['category_id'];
@@ -501,7 +524,15 @@ class CatalogService
         }
 
         $before = $this->requireTrackRecord($id);
-        $updated = $this->applyTrackUpdates($userId, $id, $payload, true, false);
+        $this->db->beginTransaction();
+        try {
+            $updated = $this->applyTrackUpdates($userId, $id, $payload, true, false);
+            $this->updateFamilySeed((int)$this->requireTrackRecord($id)['family_id'], $payload);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            throw $error;
+        }
         if (!empty($before['is_validated'])) ModerationNotificationService::queue('track', $id);
 
         return ['id' => $id, 'updated' => $updated];
@@ -518,6 +549,7 @@ class CatalogService
         $this->db->beginTransaction();
         try {
             $corrected = $this->applyTrackUpdates($userId, $trackId, $payload, false, true);
+            $this->updateFamilySeed((int)$this->requireTrackRecord($trackId)['family_id'], $payload);
             if (array_key_exists('replacement_family_name', $payload)) {
                 $name = trim((string)$payload['replacement_family_name']);
                 $length = function_exists('mb_strlen') ? mb_strlen($name) : strlen($name);
@@ -613,6 +645,14 @@ class CatalogService
         $stmt = $this->db->prepare('DELETE FROM mq_tracks WHERE id = :id');
         $stmt->execute(['id' => $id]);
         return ['id' => $id, 'deleted' => $stmt->rowCount()];
+    }
+
+    private function updateFamilySeed(int $familyId, array $payload): void
+    {
+        if (!array_key_exists('notoriety_seed', $payload)) return;
+        $seed = mq_notoriety_seed($payload['notoriety_seed']);
+        $stmt = $this->db->prepare('UPDATE mq_families SET notoriety_seed = :seed WHERE id = :id');
+        $stmt->execute(['seed' => $seed, 'id' => $familyId]);
     }
 
     private function syncTrackFamilyAliases(int $userId, int $trackId, array $payload): void
