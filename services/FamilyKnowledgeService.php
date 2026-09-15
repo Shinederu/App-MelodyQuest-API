@@ -15,6 +15,9 @@ class FamilyKnowledgeService
 
     public function forRound(int $actorId, array $payload, bool $save = false): array
     {
+        if ($actorId <= 0) {
+            throw new RuntimeException('Un compte connecté est nécessaire pour voter.');
+        }
         if ($save && !is_bool($payload['known'] ?? null)) {
             throw new RuntimeException('Choisis Oui ou Non.');
         }
@@ -27,24 +30,24 @@ class FamilyKnowledgeService
             throw new RuntimeException('Le vote est disponible quand la réponse est révélée.');
         }
 
-        $column = $actorId > 0 ? 'user_id' : 'guest_session_id';
         if ($save) {
             $stmt = $this->db->prepare(
-                "INSERT INTO mq_family_knowledge (family_id, $column, known)
+                "INSERT INTO mq_family_knowledge (family_id, user_id, known)
                  VALUES (:family, :actor, :known)
-                 ON DUPLICATE KEY UPDATE known = :choice"
+                 ON DUPLICATE KEY UPDATE id = id"
             );
-            $stmt->execute(['family' => $familyId, 'actor' => abs($actorId),
-                'known' => (int)$payload['known'], 'choice' => (int)$payload['known']]);
+            // The unique work/account key makes the first choice win, including concurrent requests.
+            $stmt->execute(['family' => $familyId, 'actor' => $actorId, 'known' => (int)$payload['known']]);
         }
-        $stmt = $this->db->prepare("SELECT known FROM mq_family_knowledge WHERE family_id = :family AND $column = :actor");
-        $stmt->execute(['family' => $familyId, 'actor' => abs($actorId)]);
+        $stmt = $this->db->prepare('SELECT known FROM mq_family_knowledge WHERE family_id = :family AND user_id = :actor');
+        $stmt->execute(['family' => $familyId, 'actor' => $actorId]);
         $choice = $stmt->fetchColumn();
         $summary = $this->summaries([$familyId])[$familyId] ?? self::summary(0, 0);
-        return ['family_id' => $familyId, 'choice' => $choice === false ? null : (bool)$choice] + $summary;
+        return ['family_id' => $familyId, 'choice' => $choice === false ? null : (bool)$choice,
+            'can_vote' => $choice === false] + $summary;
     }
 
-    public static function summary(int $known, int $total, int $seed = 50): array
+    public static function summary(int $known, int $total, int $seed = MQ_NOTORIETY_DEFAULT): array
     {
         return ['known_count' => $known, 'vote_count' => $total,
             'known_percent' => $total > 0 ? (int)round(100 * $known / $total) : null,

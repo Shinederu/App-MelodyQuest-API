@@ -101,13 +101,19 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 
 ## Verifications
 
-Reprise du 2026-09-15: migration 024 avant le runtime. Estimation par œuvre
-`mq_families.notoriety_seed` (50/75/100, defaut 50); score effectif
+Reprise du 2026-09-15: migration 025 avant le runtime. Estimation par œuvre
+`mq_families.notoriety_seed` (60/75/100, defaut 60); score effectif
 `floor((10 * seed + 100 * Oui) / (10 + nombre_avis))`. Partager la formule SQL/PHP
 via `utils/notoriety.php`; ne jamais inserer de faux avis pour initialiser.
 Conserver les anciennes notes, votes, validations et historiques. Ne pas relancer
 la remise en attente du 14 septembre. Les formulaires de musique transmettent
 l'estimation seulement apres une modification explicite de ce champ.
+Migration 025: mise a 60 de toutes les estimations une seule fois, aucun vote
+efface. Seuls les comptes connectes votent; le premier avis est definitif par
+œuvre et compte. L'upsert ne modifie jamais `known` sur doublon. La cle unique
+assure l'atomicite. `AuthMiddleware::check()` protege GET et POST du sondage,
+et `FamilyKnowledgeService` refuse les acteurs <= 0. Les anciens avis invites
+restent dans l'agregat, sans autoriser de nouveau vote invite.
 
 Reprise du 2026-09-14:
 

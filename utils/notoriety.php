@@ -3,11 +3,12 @@
 require_once __DIR__ . '/track_options.php';
 
 const MQ_NOTORIETY_PRIOR_WEIGHT = 10;
+const MQ_NOTORIETY_DEFAULT = 60;
 
 function mq_notoriety_seed($value): int
 {
-    if (!in_array($value, [50, 75, 100, '50', '75', '100'], true)) {
-        throw new RuntimeException('Estimation initiale attendue : 50, 75 ou 100 %.');
+    if (!in_array($value, [60, 75, 100, '60', '75', '100'], true)) {
+        throw new RuntimeException('Estimation initiale attendue : 60, 75 ou 100 %.');
     }
     return (int)$value;
 }

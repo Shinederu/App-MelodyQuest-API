@@ -238,7 +238,7 @@ class CatalogService
         }
 
         $this->assertCategoryExists($categoryId);
-        $seed = mq_notoriety_seed($payload['notoriety_seed'] ?? 50);
+        $seed = mq_notoriety_seed($payload['notoriety_seed'] ?? MQ_NOTORIETY_DEFAULT);
 
         $this->db->beginTransaction();
         try {

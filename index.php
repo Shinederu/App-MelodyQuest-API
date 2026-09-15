@@ -40,9 +40,8 @@ try {
         case 'GET':
             switch ($action) {
                 case 'getFamilyKnowledge':
-                    $identity = PlayerMiddleware::optional();
-                    if ($identity === null) json_error('Rejoins un salon pour participer au sondage.', 401);
-                    json_success(null, (new FamilyKnowledgeService())->forRound((int)$identity['actor_id'], $_GET));
+                    $userId = AuthMiddleware::check();
+                    json_success(null, (new FamilyKnowledgeService())->forRound($userId, $_GET));
                     break;
                 case 'getPlayerIdentity':
                     json_success(null, ['identity' => PlayerMiddleware::optional()]);
@@ -108,9 +107,8 @@ try {
         case 'POST':
             switch ($action) {
                 case 'voteFamilyKnowledge':
-                    $identity = PlayerMiddleware::optional();
-                    if ($identity === null) json_error('Rejoins un salon pour participer au sondage.', 401);
-                    json_success('Réponse enregistrée', (new FamilyKnowledgeService())->forRound((int)$identity['actor_id'], $body, true));
+                    $userId = AuthMiddleware::check();
+                    json_success('Réponse enregistrée', (new FamilyKnowledgeService())->forRound($userId, $body, true));
                     break;
                 case 'updateGuestNickname':
                     $nickname = (string)($body['nickname'] ?? '');

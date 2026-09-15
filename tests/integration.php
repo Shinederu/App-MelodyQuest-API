@@ -30,7 +30,7 @@ foreach (['Jeux video', 'Dessins animes'] as $name) {
     $categories[] = (int)$cat['id'];
     foreach ([null, 3, 7, 9] as $rating) {
         $track = $catalog->createTrack(1, ['category_id' => $cat['id'], 'family_name' => 'Oeuvre QA ' . $suffix . '-' . ($rating ?? 'inconnu'),
-            'notoriety_seed' => $rating >= 9 ? 100 : ($rating >= 7 ? 75 : 50),
+            'notoriety_seed' => $rating >= 9 ? 100 : ($rating >= 7 ? 75 : 60),
             'title' => 'Theme QA ' . ($rating ?? 'inconnu'), 'youtube_video_id' => 'M7lc1UVf-VE',
             'start_offset_seconds' => 12, 'end_offset_seconds' => 90, 'familiarity' => $rating]);
         $catalog->validateTrack(1, (int)$track['id']);
@@ -67,7 +67,7 @@ mqTest('Le createur invite peut mettre absent et exclure un invite sans effacer 
 mqTest('Le filtrage garde un tirage equilibre et exclut les musiques sous le seuil', function () use ($catalog, $lobbies, $owner, $lobbyId, $categories): void {
     $lobbies->updateLobbyConfig($owner, $lobbyId, ['min_notoriety' => 60, 'total_rounds' => 4]);
     $counts = mqInvokePrivate($lobbies, 'getPlayableTrackCountsByCategory', [$lobbyId, $categories]);
-    mqAssertSame([2, 2], array_values($counts));
+    mqAssertSame([4, 4], array_values($counts));
     $state = $lobbies->startRound($owner, $lobbyId);
     $round = $lobbies->getRoundState($owner, $lobbyId);
     mqAssertSame(90, (int)$round['round']['track']['end_offset_seconds']);
@@ -163,41 +163,50 @@ mqTest('Une TV liee peut signaler puis terminer la derniere manche en mode passi
     mqAssertFalse($lobbies->advanceUnavailableRound(null, $payload)['advanced']);
 });
 
-mqTest('La connaissance est privee avant revelation, editable, dedupliquee par oeuvre et anonymisee pour les invites', function () use ($db, $lobbies, $owner, $guest, $categories): void {
+mqTest('Le vote est reserve aux comptes et le premier choix reste definitif pour toute l oeuvre', function () use ($db, $lobbies, $catalog, $owner, $guest, $categories): void {
     $service = new FamilyKnowledgeService();
-    $lobby = $lobbies->createLobby($owner, ['selected_category_ids' => $categories, 'total_rounds' => 3])['lobby'];
+    $lobby = $lobbies->createLobby(1, ['selected_category_ids' => $categories, 'total_rounds' => 3])['lobby'];
     $id = (int)$lobby['id'];
     $lobbies->joinLobby($guest, $lobby['lobby_code']);
-    $lobbies->joinLobby(1, $lobby['lobby_code']);
-    $round = $lobbies->startRound($owner, $id)['round'];
+    $lobbies->joinLobby(2, $lobby['lobby_code']);
+    $round = $lobbies->startRound(1, $id)['round'];
     $roundId = (int)$round['id'];
     $payload = ['lobby_id' => $id, 'round_id' => $roundId, 'known' => true];
     mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload, true));
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(2, $payload, true));
     $db->exec("UPDATE mq_rounds SET started_at=DATE_SUB(NOW(3), INTERVAL 5 SECOND) WHERE id=$roundId");
     $familyName = $db->query("SELECT f.name FROM mq_rounds r JOIN mq_tracks t ON t.id=r.track_id JOIN mq_families f ON f.id=t.family_id WHERE r.id=$roundId")->fetchColumn();
-    $lobbies->submitAnswer($owner, $id, ['guess_title' => $familyName]);
-    mqAssertSame(true, $service->forRound($owner, $payload, true)['choice']);
+    $lobbies->submitAnswer(1, $id, ['guess_title' => $familyName]);
+    mqAssertSame(true, $service->forRound(1, $payload, true)['choice']);
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(2, $payload));
     mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload));
     $db->exec("UPDATE mq_rounds SET status='reveal', reveal_started_at=NOW(3) WHERE id=$roundId");
-    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(2, $payload, true));
-    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, array_replace($payload, ['known' => 'false']), true));
-    $result = $service->forRound($guest, array_replace($payload, ['known' => false]), true);
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload, true));
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(999999, $payload, true));
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(2, array_replace($payload, ['known' => 'false']), true));
+    mqAssertTrue($service->forRound(2, $payload)['can_vote']);
+    $result = $service->forRound(2, array_replace($payload, ['known' => false]), true);
     mqAssertSame(2, $result['vote_count']);
     mqAssertSame(50, $result['known_percent']);
-    $result = $service->forRound($guest, $payload, true);
+    $result = $service->forRound(2, $payload, true);
     mqAssertSame(2, $result['vote_count']);
-    mqAssertSame(100, $result['known_percent']);
-    mqAssertSame(null, $service->forRound(1, $payload)['choice']);
-    $service->forRound(1, array_replace($payload, ['known' => false]), true);
+    mqAssertSame(50, $result['known_percent']);
+    mqAssertSame(false, $result['choice']);
+    mqAssertFalse($result['can_vote']);
+    mqAssertSame(true, $service->forRound(1, array_replace($payload, ['known' => false]), true)['choice']);
     $family = $result['family_id'];
-    $lobbies->finishCurrentRound($owner, $id);
-    $second = $lobbies->startRound($owner, $id)['round'];
+    $lobbies->finishCurrentRound(1, $id);
+    $second = $lobbies->startRound(1, $id)['round'];
     $next = (int)$second['id'];
-    $sameFamilyTrack = (int)$db->query("SELECT id FROM mq_tracks WHERE family_id=$family LIMIT 1")->fetchColumn();
+    $sameFamilyTrack = (int)$catalog->createTrack(1, ['family_id' => $family, 'title' => 'Other track, same work', 'youtube_video_id' => 'M7lc1UVf-VE'])['id'];
+    $catalog->validateTrack(1, $sameFamilyTrack);
     $db->exec("UPDATE mq_rounds SET track_id=$sameFamilyTrack,status='reveal',reveal_started_at=NOW(3) WHERE id=$next");
-    $result = $service->forRound($guest, array_replace($payload, ['round_id' => $next]), true);
-    mqAssertSame(3, $result['vote_count']);
-    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($guest, $payload, true));
+    $result = (new FamilyKnowledgeService())->forRound(2, array_replace($payload, ['round_id' => $next]), true);
+    mqAssertSame(2, $result['vote_count']);
+    mqAssertSame(false, $result['choice']);
+    mqAssertFalse($result['can_vote']);
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(2, $payload, true));
+    $db->exec("INSERT INTO mq_family_knowledge(family_id,guest_session_id,known) VALUES($family," . abs($guest) . ",1)");
     $db->exec('DELETE FROM mq_guest_sessions WHERE id=' . abs($guest));
     mqAssertSame(3, $service->summaries([$family])[$family]['vote_count']);
     mqAssertSame(1, (int)$db->query("SELECT COUNT(*) FROM mq_family_knowledge WHERE family_id=$family AND user_id IS NULL AND guest_session_id IS NULL")->fetchColumn());
@@ -216,21 +225,22 @@ mqTest('La file de verification est filtree et paginee sans perdre les bornes de
 });
 
 mqTest('Le mode passif accepte un avis facultatif uniquement apres revelation', function () use ($db, $lobbies, $owner): void {
-    $lobby = $lobbies->createLobby($owner, ['game_mode' => 'autoplay', 'total_rounds' => 1])['lobby'];
+    $lobby = $lobbies->createLobby(1, ['game_mode' => 'autoplay', 'total_rounds' => 1])['lobby'];
     $id = (int)$lobby['id'];
-    $round = $lobbies->startRound($owner, $id)['round'];
+    $round = $lobbies->startRound(1, $id)['round'];
     $roundId = (int)$round['id'];
     $payload = ['lobby_id' => $id, 'round_id' => $roundId, 'known' => false];
     $service = new FamilyKnowledgeService();
-    mqAssertThrows(RuntimeException::class, fn() => $service->forRound($owner, $payload, true));
+    mqAssertThrows(RuntimeException::class, fn() => $service->forRound(1, $payload, true));
     $db->exec("UPDATE mq_rounds SET status='reveal',reveal_started_at=NOW(3) WHERE id=$roundId");
-    mqAssertSame(false, $service->forRound($owner, $payload, true)['choice']);
+    $before = $service->forRound(1, $payload);
+    mqAssertSame($before['choice'] ?? false, $service->forRound(1, $payload, true)['choice']);
 });
 
 mqTest('La notoriete partagee preserve les avis et filtre exactement les seuils 60 et 90', function () use ($db, $catalog, $lobbies, $owner, $suffix): void {
     $cat = (int)$catalog->createCategory(1, ['name' => 'Notoriete', 'slug' => 'notoriete-' . $suffix])['id'];
     $ids = [];
-    foreach ([50, 75, 100] as $seed) {
+    foreach ([60, 75, 100] as $seed) {
         $ids[$seed] = (int)$catalog->createTrack(1, ['category_id' => $cat, 'family_name' => 'Seed ' . $seed,
             'notoriety_seed' => $seed, 'title' => 'Test', 'youtube_video_id' => 'M7lc1UVf-VE'])['id'];
         $catalog->validateTrack(1, $ids[$seed]);
@@ -242,6 +252,9 @@ mqTest('La notoriete partagee preserve les avis et filtre exactement les seuils 
     $db->exec("INSERT INTO mq_family_knowledge(family_id,user_id,known) VALUES($family,1,0)");
     $summary = (new FamilyKnowledgeService())->summaries([$family])[$family];
     mqAssertSame(90, $summary['notoriety_percent']);
+    $lowFamily = (int)$db->query('SELECT family_id FROM mq_tracks WHERE id=' . $ids[60])->fetchColumn();
+    $db->exec("INSERT INTO mq_family_knowledge(family_id,user_id,known) VALUES($lowFamily,1,0)");
+    mqAssertSame(54, (new FamilyKnowledgeService())->summaries([$lowFamily])[$lowFamily]['notoriety_percent']);
     $room = $lobbies->createLobby($owner, ['selected_category_ids' => [$cat], 'min_notoriety' => 90, 'game_mode' => 'autoplay'])['lobby'];
     $id = (int)$room['id'];
     foreach ([0 => 4, 60 => 3, 90 => 2] as $min => $expected) {
@@ -256,16 +269,18 @@ mqTest('La notoriete partagee preserve les avis et filtre exactement les seuils 
     mqAssertSame(68, $summary['notoriety_percent']);
     mqAssertSame([0], array_values(mqInvokePrivate($lobbies, 'getPlayableTrackCountsByCategory', [$id, [$cat]])));
     $before = (int)$db->query('SELECT COUNT(*) FROM mq_tracks')->fetchColumn();
-    mqAssertThrows(RuntimeException::class, fn() => $catalog->createTrack(1, ['family_id' => $family, 'title' => 'Invalid', 'notoriety_seed' => 60, 'youtube_video_id' => 'M7lc1UVf-VE']));
+    mqAssertThrows(RuntimeException::class, fn() => $catalog->createTrack(1, ['family_id' => $family, 'title' => 'Invalid', 'notoriety_seed' => 50, 'youtube_video_id' => 'M7lc1UVf-VE']));
     mqAssertSame($before, (int)$db->query('SELECT COUNT(*) FROM mq_tracks')->fetchColumn());
-    $catalog->validateTrack(1, $extra, ['notoriety_seed' => 50]);
-    mqAssertSame(50, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
+    $catalog->validateTrack(1, $extra, ['notoriety_seed' => 75]);
+    mqAssertSame(75, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
     $beforeRows = $db->query('SELECT * FROM mq_tracks ORDER BY id')->fetchAll();
     $migrationDb = new PDO('mysql:host=127.0.0.1;port=33307;dbname=mq_ui_test;charset=utf8mb4', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $stmt = $migrationDb->query(file_get_contents(__DIR__ . '/../sql/024_melodyquest_notoriety.sql'));
     do { if ($stmt->columnCount()) $stmt->fetchAll(); } while ($stmt->nextRowset());
+    $stmt = $migrationDb->query(file_get_contents(__DIR__ . '/../sql/025_melodyquest_notoriety_baseline.sql'));
+    do { if ($stmt->columnCount()) $stmt->fetchAll(); } while ($stmt->nextRowset());
     mqAssertSame($beforeRows, $db->query('SELECT * FROM mq_tracks ORDER BY id')->fetchAll());
-    mqAssertSame(50, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
+    mqAssertSame(75, (int)$db->query("SELECT notoriety_seed FROM mq_families WHERE id=$family")->fetchColumn());
     mqAssertSame(1, (int)$db->query("SELECT COUNT(*) FROM mq_family_knowledge WHERE family_id=$family")->fetchColumn());
 });
 

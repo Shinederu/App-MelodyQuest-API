@@ -60,15 +60,14 @@ mqTest('Les requêtes de salon utilisent actor_id pour les droits et scores', fu
     }
 });
 
-mqTest('Le sondage exige une identite existante sans creer de session invitee', function () use ($routerSource): void {
+mqTest('Le sondage exige un compte authentifie sans creer de session invitee', function () use ($routerSource): void {
     foreach (['getFamilyKnowledge', 'voteFamilyKnowledge'] as $action) {
         $position = strpos($routerSource, "case '{$action}'");
         mqAssertTrue($position !== false);
         $end = strpos($routerSource, 'break;', $position);
         $block = substr($routerSource, $position, $end - $position);
-        mqAssertTrue(str_contains($block, 'PlayerMiddleware::optional()'));
+        mqAssertTrue(str_contains($block, 'AuthMiddleware::check()'));
         mqAssertFalse(str_contains($block, 'PlayerMiddleware::check('));
-        mqAssertTrue(str_contains($block, '$identity === null'));
-        mqAssertTrue(str_contains($block, ', 401)'));
+        mqAssertFalse(str_contains($block, 'PlayerMiddleware::optional()'));
     }
 });

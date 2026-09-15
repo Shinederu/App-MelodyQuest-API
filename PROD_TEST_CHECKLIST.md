@@ -5,7 +5,7 @@
 - Front runtime deploye: `P:\PROD\MelodyQuest\index.html` et `P:\PROD\MelodyQuest\assets\`.
 - API runtime deploye: `P:\PROD\API\melodyquest\index.php`, `bin\`, `config\`, `controllers\`, `middlewares\`, `repositories\`, `services\`, `utils\`.
 - Aucun fichier non-runtime en PROD: `.git`, `.github`, `README.md`, `AGENTS.md`, `PROD_TEST_CHECKLIST.md`, `.env.example`, `sql\`, `scripts\`, tests, caches ou brouillons.
-- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/024_melodyquest_notoriety.sql`.
+- DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/025_melodyquest_notoriety_baseline.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
 - API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
@@ -13,7 +13,7 @@
 
 ## Etat attendu
 
-- Cache-bust frontend attendu: `20260915-notoriety-slider`.
+- Cache-bust frontend attendu: `20260915-notoriety-votes`.
 - La racine ouvre le menu et permet de jouer sans compte avec un pseudo temporaire.
 - Mode actif: reponses, score, classement, votes.
 - Mode passif: salon + TV possibles, mais pas de score, pas de reponse et pas de votes de manche. Le sondage de connaissance de l'oeuvre reste facultatif.
@@ -158,11 +158,11 @@ Avec un compte admin catalogue:
 ## Livraison UI et catalogue du 12 septembre
 
 1. Menu principal: TV/presentation accessibles, pseudo invite et edition dans le header, aucune introduction redondante.
-2. Lobby actif/passif: curseur natif a trois crans Tout/Connues 60 %/Tres connues 90 %, comptes par categorie coherents, persistance au rechargement, desactive pour les non-createurs. Gestion: estimation 50/75/100 partagee par œuvre, conservee si non modifiee lors d'une validation de musique.
+2. Lobby actif/passif: curseur natif a trois crans Tout/Connues 60 %/Tres connues 90 %, comptes par categorie coherents, persistance au rechargement, desactive pour les non-createurs. Gestion: estimation 60/75/100 partagee par œuvre, conservee si non modifiee lors d'une validation de musique.
 3. Partie: tiroir au-dessus du decor, option passage automatique accessible pendant l'ecoute, pseudos longs et statut absent uniquement.
 4. Createur compte ET invite: mettre un invite absent/present, exclure puis rejoindre avec score conserve.
 5. Correction: alias OU nom de l'oeuvre, debut a zero et fin; modifier puis appliquer dans management, verifier oeuvre/alias/piste conserves.
-6. Catalogue: note 1..10 et fin optionnelle modifiables, valeurs invalides refusees. Un seuil >1 exclut les pistes sans note.
+6. Catalogue: estimation 60/75/100 et fin optionnelle modifiables, valeurs invalides refusees. Sondage absent pour les invites; un compte ne peut voter qu'une fois par œuvre, y compris apres reconnexion ou sur une autre musique de la meme œuvre. Premier Non sur la base 60: score 54 %.
 7. TV active: manche/categorie, votes et cinq essais rates; passive: pas de votes/classement. Verifier 800 x 480 et grand ecran.
 8. Sur une vraie TV: ecouter un extrait avec debut/fin, verifier l'arret a la fin et la reprise de la piste suivante sans boucle de resynchronisation.
 9. SMTP: une vraie proposition/piste en attente notifie contact@shinederu.ch; une panne SMTP ne doit pas annuler la soumission. Pas de garantie de remise en boite mail.
