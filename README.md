@@ -31,11 +31,16 @@ produit concret et employer le plus petit contrat, stockage ou flux suffisant.
 - Repo source: `P:\DEV\GitHub\App-MelodyQuest-API`
 - Repo GitHub: `https://github.com/Shinederu/App-MelodyQuest-API.git`
 - Runtime PROD: `P:\PROD\API\melodyquest`
-- Endpoint public: `https://api.shinederu.ch/melodyquest/`
+- Endpoint des commandes HTTP: `https://api.shinederu.ch/melodyquest/index.php`
 - Code projet stable: `melodyquest`
 - Front consommateur: `https://melodyquest.shinederu.ch/`
 
 Le dossier PROD ne doit pas etre un clone du repo.
+
+Utiliser explicitement `index.php` pour toutes les methodes, comme le frontend.
+Avec la configuration Nginx actuelle, un `PUT` sur le repertoire
+`/melodyquest/` renvoie un HTTP 405 HTML avant d'atteindre le routeur PHP.
+Ne pas confondre cette URL de commande avec la base des topics Mercure.
 
 Fichiers/dossiers runtime autorises en PROD:
 
@@ -657,6 +662,48 @@ rg -n "password|passwd|secret|BEGIN (RSA|OPENSSH|PRIVATE)|api_key" P:\DEV\GitHub
 ```
 
 Smoke tests fonctionnels: voir `PROD_TEST_CHECKLIST.md`.
+
+### Compatibilite PHP verifiee le 2026-10-22
+
+Controle apres la mise a jour du conteneur partage `PHP-FPM` vers
+`php-fpm-full-network:8.4.27-gd`: PHP `8.4.27`, Snuffleupagus `0.14.0` actif
+avec sa configuration valide. Image effectivement executee:
+`sha256:9e3202503fcce68fa8f959e68f02e19cab1cba9459e2f559d9d4263aee838cc2`.
+
+- Aucune incompatibilite detectee sur les parcours controles. Le runtime
+  MelodyQuest n'appelle ni shell ni `proc_open` et ne teste pas sa disponibilite.
+  Les appels `PDO::exec` sont du SQL, pas des commandes systeme. Les notifications
+  utilisent PHPMailer en SMTP, pas `sendmail`.
+- Les 37 fichiers PHP runtime DEV/PROD sont identiques; lint des 37 fichiers
+  deployes reussi dans le conteneur actif. Les 42 tests unitaires passent dans
+  un conteneur jetable issu de la meme image, sans reseau ni acces a la DB.
+- HTTPS reel: identite anonyme, connexion/deconnexion Auth, session avec compte,
+  lectures admin et refus admin pour un invite verifies. Deux invites distincts
+  ont teste des salons prives participatifs et passifs, reglages PUT, presence,
+  exclusion/retour, reponses, scores, votes, hold/release de correction et fin
+  de partie. Le test passif reproduit `revealRound`, `finishRound`, `startRound`
+  envoyes par le navigateur createur; attendre seul ne fait pas avancer le jeu.
+- Liaison et snapshots TV verifies par HTTP; reception d'un snapshot Mercure
+  prive authentifiee et outbox vide en fin de test.
+- Connexion/authentification SMTP verifiee avec les dependances/configuration
+  runtime depuis la meme image et le reseau du conteneur PHP, sans envoyer de
+  message. Cela ne prouve pas la livraison d'un mail en boite de reception.
+- Empreintes avant/apres identiques pour categories, oeuvres, alias, pistes
+  (2 726), suggestions et avis de notoriete. Salons et sessions invites de
+  diagnostic retires par l'API. Les archives normales des parties de test
+  `PHP84_Check_*` sont conservees, sans purge des historiques existants.
+
+Aucun changement du player, de la synchronisation, des protections PHP, du
+schema DB ou du runtime deploye n'a ete necessaire. Pas de redeploiement pour
+cette mise a jour documentaire. Aucun essai d'ecriture dans le catalogue live
+ni test audio sur navigateur/TV physique n'a ete realise lors de cette passe.
+
+Vigilance infrastructure partagee: `log_errors=0` observe en CLI dans le
+conteneur, avec `display_errors` desactive. Une future erreur PHP non geree peut
+donc etre peu visible; les appels applicatifs explicites a `error_log` restent
+distincts. Faire verifier la journalisation FPM lors d'une intervention infra,
+sans afficher les erreurs aux visiteurs. Ne pas desactiver Snuffleupagus ni
+revenir a une ancienne version de PHP pour contourner un blocage.
 
 Tests d'integration opt-in: `php tests/integration.php --local-fixture`.
 Ils utilisent uniquement `mq_ui_test` sur `127.0.0.1:33307` avec un MySQL jetable,

@@ -25,7 +25,7 @@ dependance. Preferer le plus petit changement complet.
 - Backend PROD: `P:\PROD\API\melodyquest`
 - Frontend DEV: `P:\DEV\GitHub\App-MelodyQuest`
 - Frontend PROD: `P:\PROD\MelodyQuest`
-- Endpoint API: `https://api.shinederu.ch/melodyquest/`
+- Endpoint des commandes API: `https://api.shinederu.ch/melodyquest/index.php` (y compris PUT/DELETE; ne pas appeler le repertoire seul)
 - Code projet: `melodyquest`
 - Tables DB: `mq_*` dans `ShinedeCore`
 - Permission admin catalogue: `melodyquest.catalog.manage`
@@ -100,6 +100,13 @@ Ne pas recreer d'anciens dossiers `Controller`, `Service`, `Repository` ou `Infr
 - `bin\process_realtime_outbox.php` est le filet CLI de reprise et peut etre supervise en mode `--loop` si necessaire.
 
 ## Verifications
+
+Compatibilite du 2026-10-22: PHP 8.4.27 + Snuffleupagus 0.14.0 verifies sur
+l'image active et par HTTPS (salons actif/passif, sessions, TV HTTP, Mercure,
+SMTP sans envoi). 42 tests unitaires et lint des 37 fichiers runtime OK.
+Aucune exception Snuffleupagus ni modification applicative necessaire.
+Voir README pour les preuves/limites et PROD_TEST_CHECKLIST pour les prochaines
+mises a jour PHP; ne pas toucher au player pour un incident du conteneur PHP.
 
 Etat catalogue du 2026-09-15: l'utilisateur a annule la revue exhaustive.
 2 702 pistes revalidees en lot, 24 validations precedentes conservees, total

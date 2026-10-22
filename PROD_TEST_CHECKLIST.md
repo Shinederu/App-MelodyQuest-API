@@ -8,7 +8,7 @@
 - DB `ShinedeCore` a jour avec les migrations `sql/001_melodyquest_core.sql` a `sql/025_melodyquest_notoriety_baseline.sql`.
 - Au moins un utilisateur avec `melodyquest.catalog.manage` via `core_*`, ou un super-admin global `core.super_admin`, pour les tests admin.
 - Domaine front `https://melodyquest.shinederu.ch` pointe vers le dossier serveur `MelodyQuest/`.
-- API publique accessible sous `https://api.shinederu.ch/melodyquest/`.
+- Commandes API sous `https://api.shinederu.ch/melodyquest/index.php` pour toutes les methodes. Un PUT sur le repertoire seul peut etre refuse par Nginx avant PHP.
 - Mercure accessible sous `https://mercure.shinederu.ch/.well-known/mercure`.
 
 ## Etat attendu
@@ -59,6 +59,20 @@ Configurer cote PHP runtime:
 - `MQ_REALTIME_OUTBOX_BATCH_SIZE`, optionnel, defaut `8`
 - `MQ_REALTIME_OUTBOX_MAX_RUNTIME_MS`, optionnel, defaut `2000`
 - `MQ_REALTIME_OUTBOX_LOCK_TIMEOUT_SECONDS`, optionnel, defaut `30`
+
+## Apres une mise a jour PHP / Snuffleupagus
+
+1. Relever version PHP, image reellement active, version/configuration Snuffleupagus et extensions PDO/MySQL, mbstring, OpenSSL et cURL. Ne pas se fier au seul tag Docker.
+2. Linter le runtime deploye dans le conteneur actif. Executer `tests/run.php` dans un conteneur jetable de la meme image, source DEV en lecture seule, reseau desactive; ne pas copier les tests en PROD.
+3. Verifier par HTTPS les sessions compte/invite, les refus admin et une lecture admin autorisee. Utiliser `index.php`, notamment pour PUT/DELETE.
+4. Creer uniquement des salons prives de diagnostic. Tester reglages, presence, exclusion/retour, reponses, scores, votes, hold/release et liaison TV; verifier un evenement Mercure prive et le drainage de l'outbox.
+5. En passif, reproduire les commandes du navigateur createur: `startRound`, attente du delai d'ecoute, `revealRound`, attente du delai de solution, `finishRound`, puis `startRound` si une manche reste. Une simple boucle GET ne remplace pas ces commandes.
+6. Tester la connexion SMTP sans message si le catalogue n'est pas modifie; ne pas creer de fausse proposition ou piste live pour declencher un email.
+7. Supprimer seulement les salons de diagnostic et terminer leurs sessions via l'API, y compris apres echec du test. Conserver leurs archives normales; ne pas purger les historiques. Verifier le catalogue inchange et l'absence de sessions/salons de diagnostic restants.
+8. Documenter les limites: liaison TV HTTP ne prouve pas la lecture YouTube sur une TV physique; connexion SMTP ne prouve pas la livraison. Verifier la journalisation PHP/FPM sans exposer les erreurs aux visiteurs ni desactiver les protections partagees.
+
+Derniere execution: 2026-10-22, PHP 8.4.27 / Snuffleupagus 0.14.0, resultats et
+limites dans README, section compatibilite PHP.
 
 ## Smoke tests API
 
